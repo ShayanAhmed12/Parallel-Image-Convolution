@@ -1,0 +1,49 @@
+Image 8000x8000 (183.1 MB RGB), reps=3 (best-of), machine procs=8, tile=16x2048, fuse-bh=16
+Generating input...
+
+=== blur ===
+variant         thr    time(s)   speedup     eff  verify
+seq               1     0.9930      1.00    1.00  reference (T1)
+omp_rows          1     0.9900      1.00    1.00  ok
+omp_rows          2     0.5330      1.86    0.93  ok
+omp_rows          4     0.3500      2.84    0.71  ok
+omp_rows          8     0.2820      3.52    0.44  ok
+omp_tiled         1     0.9740      1.02    1.02  ok
+omp_tiled         2     0.5460      1.82    0.91  ok
+omp_tiled         4     0.3640      2.73    0.68  ok
+omp_tiled         8     0.3150      3.15    0.39  ok
+seq_sep           1     0.2460      4.04    4.04  ok
+omp_sep           1     0.2520      3.94    3.94  ok
+omp_sep           2     0.2150      4.62    2.31  ok
+omp_sep           4     0.2310      4.30    1.07  ok
+omp_sep           8     0.2290      4.34    0.54  ok
+omp_sep_fused     1     0.3100      3.20    3.20  ok
+omp_sep_fused     2     0.1690      5.88    2.94  ok
+omp_sep_fused     4     0.1420      6.99    1.75  ok
+omp_sep_fused     8     0.1610      6.17    0.77  ok
+
+=== sharpen ===
+variant         thr    time(s)   speedup     eff  verify
+seq               1     0.5390      1.00    1.00  reference (T1)
+omp_rows          1     0.6030      0.89    0.89  ok
+omp_rows          2     0.3480      1.55    0.77  ok
+omp_rows          4     0.3440      1.57    0.39  ok
+omp_rows          8     0.1710      3.15    0.39  ok
+omp_tiled         1     0.4930      1.09    1.09  ok
+omp_tiled         2     0.3100      1.74    0.87  ok
+omp_tiled         4     0.1980      2.72    0.68  ok
+omp_tiled         8     0.1450      3.72    0.46  ok
+
+=== sobel ===
+variant         thr    time(s)   speedup     eff  verify
+seq               1     0.4460      1.00    1.00  reference (T1)
+omp_rows          1     0.4480      1.00    1.00  ok
+omp_rows          2     0.3030      1.47    0.74  ok
+omp_rows          4     0.1740      2.56    0.64  ok
+omp_rows          8     0.1320      3.38    0.42  ok
+omp_tiled         1     0.4980      0.90    0.90  ok
+omp_tiled         2     0.2700      1.65    0.83  ok
+omp_tiled         4     0.1480      3.01    0.75  ok
+omp_tiled         8     0.1230      3.63    0.45  ok
+
+ALL VARIANTS MATCH THE SEQUENTIAL REFERENCE -- results written to results\results_bench.csv

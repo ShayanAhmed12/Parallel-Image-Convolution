@@ -1,0 +1,15 @@
+Batch: 1500 images of 512x512, kernel=blur, pool of 8 distinct images cycled, reps=2
+Verification (per-image & per-row vs sequential): ok
+
+strategy    thr    time(s)   speedup     eff      img/s
+seq           1      6.552      1.00    1.00      228.9
+per_row       1      6.546      1.00    1.00      229.1
+per_image     1      6.789      0.97    0.97      220.9
+per_row       2      3.669      1.79    0.89      408.8
+per_image     2      4.269      1.53    0.77      351.4
+per_row       4      2.782      2.36    0.59      539.2
+per_image     4      2.247      2.92    0.73      667.6
+per_row       8      2.342      2.80    0.35      640.5
+per_image     8      1.971      3.32    0.42      761.0
+
+results written to results\results_batch.csv
