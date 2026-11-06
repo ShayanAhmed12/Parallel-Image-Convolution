@@ -25,7 +25,7 @@ $target = (& $gcc -dumpmachine).Trim()
 $is64 = $target -like 'x86_64-*'
 Write-Host "Compiler: $gcc ($target)"
 
-$flags = @('-O3', '-march=native', '-fopenmp', '-Wall', '-Wextra', '-std=gnu11')
+$flags = @('-O3', '-march=x86-64-v2', '-fopenmp', '-Wall', '-Wextra', '-std=gnu11')
 
 if ($is64) {
     # mingw-w64: link libgomp/winpthreads statically so the exe is self-contained

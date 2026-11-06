@@ -1,0 +1,17 @@
+# Build outputs (rebuild with scripts\build.ps1)
+pdc_conv.exe
+pdc_conv_old.exe
+*.dll
+
+# Temporary images
+*.ppm
+
+# Python
+__pycache__/
+
+# Packaging (scripts\package.ps1)
+dist/
+build/
+
+# Tool scratch space
+.superpowers/
