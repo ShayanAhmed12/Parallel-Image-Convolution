@@ -8,6 +8,13 @@ sequentially first and then parallelised with OpenMP, following the proposal's p
 
 ## Build and run
 
+Requires a **64-bit** MinGW-w64 GCC with OpenMP. The build script uses
+`C:\mingw64\bin\gcc.exe` if it exists (WinLibs GCC 16.2, x86_64, UCRT, extracted
+there), otherwise `gcc` from PATH; pass `-Compiler <path\to\gcc.exe>` to choose
+another. The exe is linked statically, so no runtime DLLs need to sit next to it.
+A 32-bit compiler is refused because the 12000x12000 blur needs ~2.1 GB in one
+process; `-Allow32Bit` overrides that for small runs only.
+
 Run the complete project natively in Windows PowerShell:
 
 ```powershell
@@ -46,7 +53,7 @@ Input/output images are binary PPM (P6). Convert with e.g. `convert photo.jpg ph
 | Cache-friendly tiling | `omp_tiled` — `collapse(2)` over tiles, tune with `--tile HxW` |
 | Separable Gaussian (two 1-D passes) | `seq_sep`, `omp_sep` |
 | Extra: cache-fused separable blur | `omp_sep_fused` — each thread blurs a block of rows into a small private buffer, so the intermediate never goes to main memory |
-| Benchmark with `omp_get_wtime()`, speedup T1/Tp, efficiency S/p | `bench` → `results_bench.csv`, plotted by `scripts/plot_results.py` |
+| Benchmark with `omp_get_wtime()`, speedup T1/Tp, efficiency S/p | `bench` → `results_bench.csv`, plotted by `scripts/plot_results.py`. Timing goes through `wtime()`: `omp_get_wtime()` on Linux; on Windows `QueryPerformanceCounter` (100 ns), because MinGW's `omp_get_wtime()` only ticks every 1 ms. The resolution in use is printed as `timer res=` in each log header |
 | Secondary test: thousands of 1024² images, per-image vs per-row parallelism | `batch` → `results_batch.csv` |
 
 Filters: 5x5 Gaussian (binomial 1-4-6-4-1), 3x3 sharpen, Sobel on luma with |gx|+|gy|.
@@ -81,8 +88,14 @@ verification an exact comparison with no tolerance.
 - Fallback performance run at 8000x8000 and 1500 images of 512x512 after the
   exact 12000x12000 run exceeded the 32-bit MinGW address-space limit.
 
+- 64-bit build (WinLibs GCC 16.2, static). A 12000x12000 `bench` now allocates,
+  runs and verifies every variant on this machine.
+
 ### Still required for exact proposal compliance
 
-- Repeat the primary 12000x12000 test with a 64-bit OpenMP compiler and enough
-  memory.
-- Repeat the secondary 3000-image, 1024x1024 test on that same environment.
+- Re-run the full workflow (`.\scripts\run_windows.ps1`) with the 64-bit build to
+  replace the 8000x8000 / 512x512 results with the 12000x12000 and 3000 x 1024x1024
+  runs, then update `REPORT.md`.
+- The blur benchmark needs ~2.1 GB of free RAM. On an 8 GB machine, close browsers
+  and other large programs first, or Windows pages to disk and blur timings become
+  meaningless (seen as multi-second outliers).

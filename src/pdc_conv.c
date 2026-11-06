@@ -22,7 +22,10 @@
  */
 #define _POSIX_C_SOURCE 200809L
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <malloc.h>
+#include <windows.h>
 #endif
 #include <math.h>
 #include <omp.h>
@@ -41,6 +44,28 @@ static const char *KNAME[K_COUNT] = {"blur", "sharpen", "sobel"};
 static volatile uint64_t g_sink; /* defeats dead-store elimination */
 static int g_tile_h = 16, g_tile_w = 2048; /* omp_tiled tile size   */
 static int g_fuse_bh = 16;                /* omp_sep_fused block   */
+
+/* Wall-clock timer. MinGW's libgomp implements omp_get_wtime() with a 1 ms
+ * clock (omp_get_wtick() == 0.001), too coarse for 0.1 s parallel runs, so on
+ * Windows read QueryPerformanceCounter (typically 100 ns) instead. Elsewhere
+ * omp_get_wtime() is already high resolution. */
+#ifdef _WIN32
+static double g_qpc_period;
+static double wtime(void) {
+    LARGE_INTEGER t;
+    if (g_qpc_period == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        g_qpc_period = 1.0 / (double)f.QuadPart;
+    }
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart * g_qpc_period;
+}
+static double wtick(void) { if (g_qpc_period == 0) wtime(); return g_qpc_period; }
+#else
+static double wtime(void) { return omp_get_wtime(); }
+static double wtick(void) { return omp_get_wtick(); }
+#endif
 
 static void die(const char *msg) {
     fprintf(stderr, "error: %s\n", msg);
@@ -73,9 +98,9 @@ static void xfree(void *p) {
  * page-fault cost never lands inside a timed region. */
 static void par_fill(void *buf, size_t bytes, int val) {
     const size_t chunk = (size_t)1 << 20;
-    long nch = (long)((bytes + chunk - 1) / chunk);
+    ptrdiff_t nch = (ptrdiff_t)((bytes + chunk - 1) / chunk);
 #pragma omp parallel for schedule(static)
-    for (long c = 0; c < nch; c++) {
+    for (ptrdiff_t c = 0; c < nch; c++) {
         size_t o = (size_t)c * chunk;
         size_t l = (bytes - o < chunk) ? bytes - o : chunk;
         memset((char *)buf + o, val, l);
@@ -92,7 +117,8 @@ static inline uint8_t clamp255(int v) {
 static size_t count_diff(const uint8_t *a, const uint8_t *b, size_t n) {
     size_t d = 0;
 #pragma omp parallel for reduction(+ : d) schedule(static)
-    for (long i = 0; i < (long)n; i++) d += (a[i] != b[i]);
+    /* ptrdiff_t, not long: long is 32-bit on Windows even in 64-bit builds */
+    for (ptrdiff_t i = 0; i < (ptrdiff_t)n; i++) d += (a[i] != b[i]);
     return d;
 }
 
@@ -446,9 +472,9 @@ static double best_time(const variant_t *v, kernel_t k, const uint8_t *in, uint8
                         uint16_t *tmp, int W, int H, int reps) {
     double best = 1e30;
     for (int r = 0; r < reps; r++) {
-        double t0 = omp_get_wtime();
+        double t0 = wtime();
         v->fn(k, in, out, tmp, W, H);
-        double t = omp_get_wtime() - t0;
+        double t = wtime() - t0;
         if (t < best) best = t;
     }
     g_sink += out[(size_t)W * 3 / 2];
@@ -458,8 +484,8 @@ static double best_time(const variant_t *v, kernel_t k, const uint8_t *in, uint8
 static int bench(int W, int H, int kmask, const int *pl, int np, int reps, const char *csv) {
     size_t bytes = (size_t)W * H * 3;
     int need_tmp = kmask & (1 << K_BLUR);
-    printf("Image %dx%d (%.1f MB RGB), reps=%d (best-of), machine procs=%d, tile=%dx%d, fuse-bh=%d\n",
-           W, H, bytes / 1048576.0, reps, omp_get_num_procs(), g_tile_h, g_tile_w, g_fuse_bh);
+    printf("Image %dx%d (%.1f MB RGB), reps=%d (best-of), machine procs=%d, tile=%dx%d, fuse-bh=%d, timer res=%.0e s\n",
+           W, H, bytes / 1048576.0, reps, omp_get_num_procs(), g_tile_h, g_tile_w, g_fuse_bh, wtick());
     uint8_t *in = xalloc(bytes), *ref = xalloc(bytes), *out = xalloc(bytes);
     uint16_t *tmp = need_tmp ? xalloc(bytes * sizeof(uint16_t)) : NULL;
     printf("Generating input...\n");
@@ -520,8 +546,8 @@ static int bench(int W, int H, int kmask, const int *pl, int np, int reps, const
 static int batch(int N, int S, kernel_t k, const int *pl, int np, int reps, const char *csv) {
     const int POOL = N < 8 ? N : 8;
     size_t bytes = (size_t)S * S * 3;
-    printf("Batch: %d images of %dx%d, kernel=%s, pool of %d distinct images cycled, reps=%d\n",
-           N, S, S, KNAME[k], POOL, reps);
+    printf("Batch: %d images of %dx%d, kernel=%s, pool of %d distinct images cycled, reps=%d, timer res=%.0e s\n",
+           N, S, S, KNAME[k], POOL, reps, wtick());
     uint8_t *pool[8], *ref[8], *chk[8];
     for (int i = 0; i < POOL; i++) {
         pool[i] = xalloc(bytes); ref[i] = xalloc(bytes); chk[i] = xalloc(bytes);
@@ -552,9 +578,9 @@ static int batch(int N, int S, kernel_t k, const int *pl, int np, int reps, cons
     double tseq = 1e30;
     omp_set_num_threads(1);
     for (int r = 0; r < reps; r++) {
-        double t0 = omp_get_wtime();
+        double t0 = wtime();
         for (int i = 0; i < N; i++) run_seq(k, pool[i % POOL], shared_out, S, S);
-        double t = omp_get_wtime() - t0;
+        double t = wtime() - t0;
         if (t < tseq) tseq = t;
     }
     g_sink += shared_out[S];
@@ -570,16 +596,16 @@ static int batch(int N, int S, kernel_t k, const int *pl, int np, int reps, cons
         /* strategy A: parallelise inside each image (rows), images one by one */
         double ta = 1e30;
         for (int r = 0; r < reps; r++) {
-            double t0 = omp_get_wtime();
+            double t0 = wtime();
             for (int i = 0; i < N; i++) run_omp_rows(k, pool[i % POOL], shared_out, S, S);
-            double t = omp_get_wtime() - t0;
+            double t = wtime() - t0;
             if (t < ta) ta = t;
         }
         g_sink += shared_out[S];
         /* strategy B: one image per thread, each image processed sequentially */
         double tb = 1e30;
         for (int r = 0; r < reps; r++) {
-            double t0 = omp_get_wtime();
+            double t0 = wtime();
             uint64_t local = 0;
 #pragma omp parallel reduction(+ : local)
             {
@@ -592,7 +618,7 @@ static int batch(int N, int S, kernel_t k, const int *pl, int np, int reps, cons
                 }
                 xfree(o);
             }
-            double t = omp_get_wtime() - t0;
+            double t = wtime() - t0;
             g_sink += local;
             if (t < tb) tb = t;
         }
@@ -662,9 +688,9 @@ int main(int argc, char **argv) {
         uint16_t *tmp = xalloc(bytes * sizeof(uint16_t));
         par_fill(out, bytes, 0); par_fill(tmp, bytes * sizeof(uint16_t), 0);
         omp_set_num_threads(v->parallel ? nthreads : 1);
-        double t0 = omp_get_wtime();
+        double t0 = wtime();
         v->fn(k, in, out, tmp, W, H);
-        double t = omp_get_wtime() - t0;
+        double t = wtime() - t0;
         printf("%s / %s on %dx%d with %d thread(s): %.4f s\n", KNAME[k], v->name, W, H,
                v->parallel ? nthreads : 1, t);
         if (out_path) { write_ppm(out_path, out, W, H); printf("wrote %s\n", out_path); }
