@@ -47,8 +47,8 @@ METHOD_HELP = {
                "wait for the first to finish completely (an implicit barrier), and the full-size "
                "intermediate image goes through main memory.",
     "omp_sep_fused": "Each thread takes a block of rows and does both passes on it, using a small "
-                     "private buffer that stays in the cache. No barrier is needed; a few rows at the "
-                     "block edges are computed twice.",
+                     "private buffer, so no barrier is needed and, if the image is not too wide, the "
+                     "buffer stays in the cache. A few rows at the block edges are computed twice.",
 }
 
 BLUR_SIZES = [3, 5, 7, 9, 11, 15, 21, 25]

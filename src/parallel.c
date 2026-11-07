@@ -137,7 +137,9 @@ static void run_separable(const Filter *f, const Image *in, Image *out, uint32_t
 /* Fused: each thread takes a block of `fuse_rows` output rows, blurs the
  * rows it needs horizontally into its own small buffer (block + radius rows
  * above and below), then immediately does the vertical pass from that
- * buffer. The intermediate never leaves the cache and no barrier is needed.
+ * buffer. No barrier is needed, and the intermediate can stay in the cache
+ * if the buffer is small enough (it is about 20 rows x width x 12 bytes:
+ * 2.9 MB at width 12000, too big for this CPU's caches -- see REPORT.md).
  * The price: rows on the edge of a block are blurred horizontally twice. */
 static void run_separable_fused(const Filter *f, const Image *in, Image *out, int fuse_rows,
                                 uint8_t *owner) {

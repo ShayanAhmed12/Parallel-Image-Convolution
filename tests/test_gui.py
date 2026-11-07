@@ -165,13 +165,14 @@ class EngineRunTests(TempDirTest):
         self.assertEqual(charts.read_csv(csv)[0]["identical"], "yes")
 
     def test_engine_run_out_of_memory(self):
-        self.start(["bench", "--size", 100000, "--kernel", "blur", "--threads", 1])
+        self.start(["bench", "--size", 100000, "--kernel", "blur", "--threads", 1, "--csv", self.tmp / "b.csv"])
         self.assertTrue(pump(self.root, lambda: self.done is not None, 30))
         self.assertNotEqual(self.done[0], 0)
         self.assertIn("out of memory", self.done[1])
 
     def test_engine_run_stop(self):
-        run = self.start(["bench", "--size", 6000, "--kernel", "blur", "--blur-size", 25, "--threads", 1])
+        run = self.start(["bench", "--size", 6000, "--kernel", "blur", "--blur-size", 25, "--threads", 1,
+                           "--csv", self.tmp / "b.csv"])
         pump(self.root, lambda: False, 1)
         self.assertTrue(run.running)
         stopped_at = time.time()
