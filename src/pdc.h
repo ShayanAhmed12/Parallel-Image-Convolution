@@ -125,6 +125,12 @@ const char *method_name(Method m);
 int         method_from_name(const char *name, Method *out);   /* 1 = ok, 0 = unknown */
 int         method_blur_only(Method m);
 int         method_is_parallel(Method m);
+const char *schedule_name(Schedule s);                           /* "static", "dynamic", "guided" */
+int         schedule_from_name(const char *name, Schedule *out);  /* 1 = ok, 0 = unknown */
+
+/* thread map: owner[] (one thread number per pixel) drawn as a colour image */
+extern const uint8_t THREAD_COLORS[10][3];
+void        threadmap_write_ppm(const char *path, const uint8_t *owner, int width, int height);
 
 /* ------------------------------------------------------------------ */
 /* bench.c -- the bench and batch commands                             */
@@ -138,6 +144,7 @@ typedef struct {
     int blur_size;
     int threads[MAX_THREAD_COUNTS], n_threads;
     int reps;                            /* best of this many runs */
+    Schedule schedule;                   /* for omp_rows */
     int tile_h, tile_w, fuse_rows;
     const char *csv;
 } BenchOptions;

@@ -13,8 +13,13 @@
  *   omp_sep_fused  separable blur where each thread does both passes on a
  *                  small block of rows, so the intermediate stays in cache
  *
- * Course concepts: data parallelism, static scheduling, collapse(2), the
- * implicit barrier between two "omp for" loops, per-thread private buffers.
+ * Course concepts: data parallelism, loop scheduling (static, dynamic,
+ * guided), collapse(2), the implicit barrier between two "omp for" loops,
+ * per-thread private buffers.
+ *
+ * Thread map: when opt->owner is not NULL, each method also records which
+ * thread wrote each pixel (one byte per pixel). It is only used for a
+ * separate, untimed run that draws the picture of the work split.
  *
  * Why it is safe: threads only read the input image and each output pixel is
  * written by exactly one thread, so there are no races and no locks.
@@ -39,20 +44,34 @@ RunOptions run_options_default(void) {
     return opt;
 }
 
+/* Thread map: write this thread's number into the owner bytes of the
+ * rectangle rows y0..y1-1, columns x0..x1-1. Does nothing for timed runs. */
+static void mark_owner(uint8_t *owner, int width, int y0, int y1, int x0, int x1) {
+    if (!owner) return;
+    int id = omp_get_thread_num();          /* 0 outside a parallel region */
+    for (int y = y0; y < y1; y++) memset(owner + (size_t)y * width + x0, id, (size_t)(x1 - x0));
+}
+
 /* ------------------------------------------------------------------ */
 /* 2-D methods: filter_box on different pieces of the image             */
 /* ------------------------------------------------------------------ */
 
-static void run_sequential(const Filter *f, const Image *in, Image *out) {
+static void run_sequential(const Filter *f, const Image *in, Image *out, uint8_t *owner) {
     filter_box(f, in, out, 0, in->height, 0, in->width);
+    mark_owner(owner, in->width, 0, in->height, 0, in->width);
 }
 
-static void run_rows(const Filter *f, const Image *in, Image *out) {
-    /* split the rows between the threads: thread 0 gets the first block of
-     * rows, thread 1 the next block, and so on (static scheduling) */
-#pragma omp parallel for schedule(static)
-    for (int y = 0; y < in->height; y++)
+static void run_rows(const Filter *f, const Image *in, Image *out, uint8_t *owner) {
+    /* split the rows between the threads. schedule(runtime) means the split
+     * is chosen by omp_set_schedule() in run_method:
+     *   static  - thread 0 gets the first block of rows, thread 1 the next, ...
+     *   dynamic - a free thread takes the next single row (load balancing)
+     *   guided  - like dynamic, but with big pieces first and small ones last */
+#pragma omp parallel for schedule(runtime)
+    for (int y = 0; y < in->height; y++) {
         filter_box(f, in, out, y, y + 1, 0, in->width);
+        mark_owner(owner, in->width, y, y + 1, 0, in->width);
+    }
 }
 
 static void run_tiled(const Filter *f, const Image *in, Image *out, const RunOptions *opt) {
@@ -67,6 +86,7 @@ static void run_tiled(const Filter *f, const Image *in, Image *out, const RunOpt
             int y0 = ty * th, y1 = (y0 + th < in->height) ? y0 + th : in->height;
             int x0 = tx * tw, x1 = (x0 + tw < in->width) ? x0 + tw : in->width;
             filter_box(f, in, out, y0, y1, x0, x1);
+            mark_owner(opt->owner, in->width, y0, y1, x0, x1);
         }
 }
 
@@ -84,15 +104,17 @@ static void vertical_pass_row(const Filter *f, const uint32_t *sums, Image *out,
     blur_row_vertical(f, rows, out->pixels + (size_t)y * row_len, out->width);
 }
 
-static void run_separable_sequential(const Filter *f, const Image *in, Image *out, uint32_t *sums) {
+static void run_separable_sequential(const Filter *f, const Image *in, Image *out, uint32_t *sums,
+                                     uint8_t *owner) {
     const size_t row_len = (size_t)in->width * 3;
     for (int y = 0; y < in->height; y++)
         blur_row_horizontal(f, in->pixels + y * row_len, sums + y * row_len, in->width);
     for (int y = 0; y < in->height; y++)
         vertical_pass_row(f, sums, out, y);
+    mark_owner(owner, in->width, 0, in->height, 0, in->width);
 }
 
-static void run_separable(const Filter *f, const Image *in, Image *out, uint32_t *sums) {
+static void run_separable(const Filter *f, const Image *in, Image *out, uint32_t *sums, uint8_t *owner) {
     const size_t row_len = (size_t)in->width * 3;
     /* one team of threads for both passes */
 #pragma omp parallel
@@ -105,8 +127,10 @@ static void run_separable(const Filter *f, const Image *in, Image *out, uint32_t
          * when every thread has finished pass 1, because a row's vertical sum
          * needs rows that other threads produced */
 #pragma omp for schedule(static)
-        for (int y = 0; y < in->height; y++)
+        for (int y = 0; y < in->height; y++) {
             vertical_pass_row(f, sums, out, y);
+            mark_owner(owner, in->width, y, y + 1, 0, in->width);   /* who wrote the final row */
+        }
     }
 }
 
@@ -115,7 +139,8 @@ static void run_separable(const Filter *f, const Image *in, Image *out, uint32_t
  * above and below), then immediately does the vertical pass from that
  * buffer. The intermediate never leaves the cache and no barrier is needed.
  * The price: rows on the edge of a block are blurred horizontally twice. */
-static void run_separable_fused(const Filter *f, const Image *in, Image *out, int fuse_rows) {
+static void run_separable_fused(const Filter *f, const Image *in, Image *out, int fuse_rows,
+                                uint8_t *owner) {
     const int W = in->width, H = in->height, r = f->radius;
     const size_t row_len = (size_t)W * 3;
     const int blocks = (H + fuse_rows - 1) / fuse_rows;
@@ -137,6 +162,7 @@ static void run_separable_fused(const Filter *f, const Image *in, Image *out, in
                 for (int j = 0; j < f->size; j++) rows[j] = buffer + (size_t)(y - y0 + j) * row_len;
                 blur_row_vertical(f, rows, out->pixels + (size_t)y * row_len, W);
             }
+            mark_owner(owner, W, y0, y1, 0, W);
         }
         xfree(buffer);
     }
@@ -148,13 +174,20 @@ static void run_separable_fused(const Filter *f, const Image *in, Image *out, in
 
 void run_method(Method m, const Filter *f, const Image *in, Image *out, const RunOptions *opt) {
     omp_set_num_threads(method_is_parallel(m) ? opt->threads : 1);
+    /* the loop schedule used by schedule(runtime) in run_rows;
+     * chunk 0 means "the default": equal blocks for static, adaptive for guided */
+    switch (opt->schedule) {
+    case SCHEDULE_STATIC:  omp_set_schedule(omp_sched_static, 0); break;
+    case SCHEDULE_DYNAMIC: omp_set_schedule(omp_sched_dynamic, 1); break;
+    case SCHEDULE_GUIDED:  omp_set_schedule(omp_sched_guided, 0); break;
+    }
     switch (m) {
-    case METHOD_SEQ:       run_sequential(f, in, out); break;
-    case METHOD_ROWS:      run_rows(f, in, out); break;
+    case METHOD_SEQ:       run_sequential(f, in, out, opt->owner); break;
+    case METHOD_ROWS:      run_rows(f, in, out, opt->owner); break;
     case METHOD_TILED:     run_tiled(f, in, out, opt); break;
-    case METHOD_SEP_SEQ:   run_separable_sequential(f, in, out, opt->scratch); break;
-    case METHOD_SEP:       run_separable(f, in, out, opt->scratch); break;
-    case METHOD_SEP_FUSED: run_separable_fused(f, in, out, opt->fuse_rows); break;
+    case METHOD_SEP_SEQ:   run_separable_sequential(f, in, out, opt->scratch, opt->owner); break;
+    case METHOD_SEP:       run_separable(f, in, out, opt->scratch, opt->owner); break;
+    case METHOD_SEP_FUSED: run_separable_fused(f, in, out, opt->fuse_rows, opt->owner); break;
     case METHOD_COUNT:     break;
     }
 }
@@ -173,6 +206,30 @@ int method_from_name(const char *name, Method *out) {
 
 int method_blur_only(Method m) {
     return m == METHOD_SEP_SEQ || m == METHOD_SEP || m == METHOD_SEP_FUSED;
+}
+
+static const char *const SCHEDULE_NAMES[] = { "static", "dynamic", "guided" };
+
+const char *schedule_name(Schedule s) { return SCHEDULE_NAMES[s]; }
+
+int schedule_from_name(const char *name, Schedule *out) {
+    for (int s = 0; s < 3; s++)
+        if (!strcmp(name, SCHEDULE_NAMES[s])) { *out = (Schedule)s; return 1; }
+    return 0;
+}
+
+/* thread map colours (matplotlib "tab10"): thread t is drawn in THREAD_COLORS[t % 10] */
+const uint8_t THREAD_COLORS[10][3] = {
+    {31, 119, 180}, {255, 127, 14}, {44, 160, 44}, {214, 39, 40}, {148, 103, 189},
+    {140, 86, 75}, {227, 119, 194}, {127, 127, 127}, {188, 189, 34}, {23, 190, 207},
+};
+
+void threadmap_write_ppm(const char *path, const uint8_t *owner, int width, int height) {
+    Image map = image_new(width, height);
+    for (size_t i = 0; i < (size_t)width * height; i++)
+        memcpy(map.pixels + i * 3, THREAD_COLORS[owner[i] % 10], 3);
+    image_write_ppm(path, &map);
+    image_free(&map);
 }
 
 int method_is_parallel(Method m) {

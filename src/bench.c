@@ -56,15 +56,16 @@ int run_bench(const BenchOptions *o) {
     const int W = o->width, H = o->height;
     const size_t bytes = (size_t)W * H * 3;
     printf("Image %dx%d (%.1f MB RGB), reps=%d (best-of), machine procs=%d, tile=%dx%d, "
-           "fuse-bh=%d, timer res=%.0e s\n",
+           "fuse-bh=%d, schedule=%s, timer res=%.0e s\n",
            W, H, bytes / 1048576.0, o->reps, omp_get_num_procs(), o->tile_h, o->tile_w,
-           o->fuse_rows, wtick());
+           o->fuse_rows, schedule_name(o->schedule), wtick());
 
     Image in = image_new(W, H), reference = image_new(W, H), out = image_new(W, H);
     RunOptions opt = run_options_default();
     opt.tile_h = o->tile_h;
     opt.tile_w = o->tile_w;
     opt.fuse_rows = o->fuse_rows;
+    opt.schedule = o->schedule;
     if (filter_uses_scratch(o->filters)) {
         opt.scratch = xalloc(bytes * sizeof(uint32_t));
         first_touch(opt.scratch, bytes * sizeof(uint32_t), 0);
