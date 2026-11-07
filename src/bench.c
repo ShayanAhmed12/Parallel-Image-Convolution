@@ -143,10 +143,33 @@ int run_bench(const BenchOptions *o) {
 
 #define POOL_MAX 8   /* distinct test images, reused in turn */
 
+/* Both strategies must reproduce the sequential output with p threads.
+ * Runs before the timed loops, so it adds nothing to the measured times. */
+static int batch_verified(const Filter *f, const Image *pool, const Image *reference, Image *check,
+                          int pool_size, int p) {
+    const int S = pool[0].width;
+    const size_t bytes = (size_t)S * S * 3;
+    int ok = 1;
+    RunOptions opt = run_options_default();
+    opt.threads = p;
+    for (int i = 0; i < pool_size; i++) {          /* per_row: rows of one image split */
+        first_touch(check[i].pixels, bytes, 0xA5);
+        run_method(METHOD_ROWS, f, &pool[i], &check[i], &opt);
+        if (image_count_differences(&check[i], &reference[i])) ok = 0;
+    }
+    for (int i = 0; i < pool_size; i++) first_touch(check[i].pixels, bytes, 0xA5);
+    omp_set_num_threads(p);
+#pragma omp parallel for schedule(dynamic, 1)       /* per_image: one image per thread */
+    for (int i = 0; i < pool_size; i++) filter_box(f, &pool[i], &check[i], 0, S, 0, S);
+    for (int i = 0; i < pool_size; i++)
+        if (image_count_differences(&check[i], &reference[i])) ok = 0;
+    printf("verified with %d thread(s): %s\n", p, ok ? "ok" : "MISMATCH");
+    return ok;
+}
+
 int run_batch(const BatchOptions *o) {
     const int N = o->count, S = o->size;
     const int pool_size = N < POOL_MAX ? N : POOL_MAX;
-    const size_t bytes = (size_t)S * S * 3;
     const Filter f = filter_make(o->filter, o->blur_size);
     char size_text[8];
     blur_size_text(&f, size_text, sizeof size_text);
@@ -163,22 +186,9 @@ int run_batch(const BatchOptions *o) {
     Image shared_out = image_new(S, S);
     RunOptions opt = run_options_default();
 
-    /* verification: both strategies must reproduce the sequential output */
+    /* the sequential outputs every parallel run is compared with */
     for (int i = 0; i < pool_size; i++) run_method(METHOD_SEQ, &f, &pool[i], &reference[i], &opt);
-    int ok = 1;
-    omp_set_num_threads(o->threads[o->n_threads - 1]);
-    /* per-image style: one image per thread */
-#pragma omp parallel for schedule(dynamic, 1)
-    for (int i = 0; i < pool_size; i++) filter_box(&f, &pool[i], &check[i], 0, S, 0, S);
-    for (int i = 0; i < pool_size; i++)
-        if (image_count_differences(&check[i], &reference[i])) ok = 0;
-    opt.threads = o->threads[o->n_threads - 1];
-    for (int i = 0; i < pool_size; i++) {
-        first_touch(check[i].pixels, bytes, 0xA5);
-        run_method(METHOD_ROWS, &f, &pool[i], &check[i], &opt);
-        if (image_count_differences(&check[i], &reference[i])) ok = 0;
-    }
-    printf("Verification (per-image & per-row vs sequential): %s\n", ok ? "ok" : "MISMATCH");
+    int all_ok = 1;
 
     FILE *csv = fopen(o->csv, "w");
     if (!csv) die("cannot open %s for writing", o->csv);
@@ -195,12 +205,13 @@ int run_batch(const BatchOptions *o) {
     }
     printf("\n%-10s %4s %10s %9s %7s %10s\n", "strategy", "thr", "time(s)", "speedup", "eff", "img/s");
     printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "seq", 1, t1, 1.0, 1.0, N / t1);
-    fprintf(csv, "seq,%s,%s,1,%.6f,1.000,1.000,%.2f,%s\n", filter_name(f.kind), size_text, t1, N / t1,
-            ok ? "ok" : "FAIL");
+    fprintf(csv, "seq,%s,%s,1,%.6f,1.000,1.000,%.2f,ref\n", filter_name(f.kind), size_text, t1, N / t1);
 
     for (int i = 0; i < o->n_threads; i++) {
         const int p = o->threads[i];
         opt.threads = p;
+        const int ok = batch_verified(&f, pool, reference, check, pool_size, p);
+        if (!ok) all_ok = 0;
         warm_up_threads(p);
 
         /* strategy A, per_row: images one after another, rows split between threads */
@@ -251,5 +262,5 @@ int run_batch(const BatchOptions *o) {
         image_free(&check[i]);
     }
     image_free(&shared_out);
-    return ok ? 0 : 2;
+    return all_ok ? 0 : 2;
 }

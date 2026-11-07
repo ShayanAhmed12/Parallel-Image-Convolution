@@ -36,21 +36,31 @@ def _style(ax, xlabel, ylabel, xticks):
     ax.legend(fontsize=8)
 
 
-def _ideal_line(ax, metric, threads):
-    """Perfect scaling: speedup = p, efficiency = 1."""
+# metric -> (bench.csv column, y-axis label)
+METRICS = {"time": ("time_s", "time (s)"),
+           "speedup": ("speedup_vs_seq", "speedup (T1 / Tp)"),
+           "efficiency": ("efficiency", "efficiency (speedup / p)")}
+
+
+def _ideal_line(ax, metric, threads, methods=None):
+    """Perfect scaling: time = T1 / p, speedup = p, efficiency = 1."""
     threads = sorted(threads)
-    if metric == "speedup":
+    if metric == "time":
+        if methods and "seq" in methods:
+            t1 = methods["seq"][0][1]
+            ax.plot(threads, [t1 / p for p in threads], "k--", lw=1, label="ideal (T1 / p)")
+    elif metric == "speedup":
         ax.plot(threads, threads, "k--", lw=1, label="ideal")
     else:
         ax.axhline(1.0, color="k", ls="--", lw=1, label="ideal")
 
 
 def speedup_chart(rows, metric="speedup"):
-    """bench.csv: speedup (or efficiency) against threads, one panel per filter and blur size."""
-    column = "speedup_vs_seq" if metric == "speedup" else "efficiency"
+    """bench.csv: time, speedup or efficiency against threads, one panel per filter and blur size."""
+    column, ylabel = METRICS[metric]
     panels = defaultdict(lambda: defaultdict(list))      # title -> method -> [(threads, value)]
     for r in rows:
-        if r["method"] != "seq":
+        if r["method"] != "seq" or metric == "time":     # seq is the reference line on the time chart
             panels[_panel_title(r)][r["method"]].append((int(r["threads"]), float(r[column])))
 
     fig = Figure(figsize=(4.6 * max(1, len(panels)), 4.2))
@@ -64,10 +74,9 @@ def speedup_chart(rows, metric="speedup"):
                 ax.axhline(points[0][1], ls=":", lw=1.4, label=label)
             else:
                 ax.plot([p[0] for p in points], [p[1] for p in points], marker="o", label=label)
-        _ideal_line(ax, metric, threads)
+        _ideal_line(ax, metric, threads, methods)
         ax.set_title(title)
-        _style(ax, "threads", "speedup (T1 / Tp)" if metric == "speedup" else "efficiency (speedup / p)",
-               threads)
+        _style(ax, "threads", ylabel, threads)
     fig.tight_layout()
     return fig
 

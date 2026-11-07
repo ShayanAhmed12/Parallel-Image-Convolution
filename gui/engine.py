@@ -75,6 +75,11 @@ def thread_choices(logical_cpus):
     return choices
 
 
+def default_threads(choices):
+    """The largest choice up to 8: the thread map has 10 colours, and 8 is enough to show scaling."""
+    return max(t for t in choices if t <= 8)
+
+
 def bench_memory_bytes(width, height, blur_separable):
     """Memory a bench run needs: input, reference and output images (+ the separable sums)."""
     image = width * height * 3

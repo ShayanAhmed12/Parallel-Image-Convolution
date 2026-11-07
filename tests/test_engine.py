@@ -231,13 +231,15 @@ class BenchAndBatchCsvTests(TempDirTest):
 
     def test_batch_csv(self):
         csv = self.tmp / "batch.csv"
-        run("batch", "--n", 16, "--bsize", 64, "--threads", "1,2", "--reps", 1, "--csv", csv)
+        result = run("batch", "--n", 16, "--bsize", 64, "--threads", "1,2", "--reps", 1, "--csv", csv)
+        for p in (1, 2):
+            self.assertIn(f"verified with {p} thread(s): ok", result.stdout)
         header, rows = read_csv_rows(csv)
         self.assertEqual(header, "strategy,filter,blur_size,threads,time_s,speedup_vs_seq,efficiency,"
                                  "images_per_s,verified")
         self.assertEqual([(r["strategy"], r["threads"]) for r in rows],
                          [("seq", "1"), ("per_row", "1"), ("per_image", "1"), ("per_row", "2"), ("per_image", "2")])
-        self.assertEqual({r["verified"] for r in rows}, {"ok"})
+        self.assertEqual([r["verified"] for r in rows], ["ref", "ok", "ok", "ok", "ok"])
         self.assertEqual({(r["filter"], r["blur_size"]) for r in rows}, {("blur", "5")})
 
 

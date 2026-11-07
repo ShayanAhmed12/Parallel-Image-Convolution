@@ -135,12 +135,27 @@ class App(tk.Tk):
             self.current_run = None
             self.progress.stop()
             self.progress.config(mode="determinate", value=0)   # empty bar when idle
+            self.set_busy(False)
             on_done(code, error)
 
         self.status.config(text=status)
         self.progress.config(mode="indeterminate")
         self.progress.start(15)
-        self.current_run = engine.EngineRun(args, on_line or (lambda line: None), finished, self)
+        self.set_busy(True)
+        try:
+            self.current_run = engine.EngineRun(args, on_line or (lambda line: None), finished, self)
+        except OSError as e:          # missing exe, or blocked by antivirus
+            finished(1, f"Could not start {engine.engine_path()}:\n{e}")
+
+    def set_busy(self, busy):
+        """While a run is going, every tab's Run is off and every tab's Stop is on."""
+        for tab in (self.filter_tab, self.bench_tab, self.batch_tab):
+            tab.start_button().state(["disabled"] if busy else ["!disabled"])
+            tab.stop_button.state(["!disabled"] if busy else ["disabled"])
+
+    def stop_run(self):
+        if self.current_run:
+            self.current_run.stop()
 
     def show_engine_error(self, error):
         self.status.config(text="Failed")
@@ -187,7 +202,7 @@ class FilterTab(ttk.Frame):
         self.method = tk.StringVar()
         self.schedule = tk.StringVar(value="static")
         threads = engine.thread_choices(app.info.logical_cpus)
-        self.threads = tk.StringVar(value=str(threads[-1]))
+        self.threads = tk.StringVar(value=str(engine.default_threads(threads)))
         self.show_map = tk.BooleanVar(value=False)
 
         left = ttk.Frame(self, width=300)
@@ -248,7 +263,9 @@ class FilterTab(ttk.Frame):
         buttons.pack(fill="x", pady=8)
         self.apply_button = ttk.Button(buttons, text="Apply", default="active", command=self.apply)
         self.apply_button.pack(side="left")
-        ttk.Button(buttons, text="Save As...", command=self.save_as).pack(side="left", padx=6)
+        self.stop_button = ttk.Button(buttons, text="Stop", command=app.stop_run, state="disabled")
+        self.stop_button.pack(side="left", padx=6)
+        ttk.Button(buttons, text="Save As...", command=self.save_as).pack(side="left")
 
         # result
         box = ttk.LabelFrame(left, text="Result", padding=8)
@@ -351,7 +368,6 @@ class FilterTab(ttk.Frame):
             messagebox.showerror("Image size", "The image size must be a whole number from 1 to 20000.")
             return
         generated = self.app.runs / "generated.ppm"
-        self.apply_button.state(["disabled"])
         self.app.run(["gen", "--size", size, "--out", generated], f"Generating a {size} x {size} test image...",
                      lambda code, error: self.run_filter(generated) if code == 0 else self.finish(code, error))
 
@@ -368,11 +384,12 @@ class FilterTab(ttk.Frame):
         if self.show_map.get():
             args += ["--threadmap", runs / "map.ppm"]
         self.input_ppm = input_ppm
-        self.apply_button.state(["disabled"])
         self.app.run(args, "Filtering (the sequential version also runs, for comparison)...", self.finish)
 
+    def start_button(self):
+        return self.apply_button
+
     def finish(self, code, error):
-        self.apply_button.state(["!disabled"])
         csv = self.app.runs / "filter.csv"
         if code == -1:
             self.app.status.config(text="Stopped")
@@ -473,7 +490,7 @@ class RunTab(ttk.Frame):
         buttons.pack(fill="x", pady=8)
         self.run_button = ttk.Button(buttons, text="Run", default="active", command=self.run)
         self.run_button.pack(side="left")
-        self.stop_button = ttk.Button(buttons, text="Stop", command=self.stop, state="disabled")
+        self.stop_button = ttk.Button(buttons, text="Stop", command=app.stop_run, state="disabled")
         self.stop_button.pack(side="left", padx=6)
 
         # right side: chart (with its switch), table, log
@@ -575,13 +592,10 @@ class RunTab(ttk.Frame):
         csv.unlink(missing_ok=True)
         self.clear_results()
         self.last_code = None
-        self.run_button.state(["disabled"])
-        self.stop_button.state(["!disabled"])
         self.app.run(args + ["--csv", csv], self.status_text(), self.finished, on_line=self.add_log_line)
 
-    def stop(self):
-        if self.app.current_run:
-            self.app.current_run.stop()
+    def start_button(self):
+        return self.run_button
 
     def add_log_line(self, line):
         self.log.config(state="normal")
@@ -591,8 +605,6 @@ class RunTab(ttk.Frame):
 
     def finished(self, code, error):
         self.last_code = code
-        self.run_button.state(["!disabled"])
-        self.stop_button.state(["disabled"])
         csv = self.app.runs / self.csv_name
         if code == -1:
             self.add_log_line("--- stopped ---")
@@ -646,7 +658,7 @@ class BenchTab(RunTab):
     """One large image: every method at the chosen thread counts (pdc_conv bench)."""
 
     csv_name = "bench.csv"
-    metrics = [("speedup", "Speedup"), ("efficiency", "Efficiency")]
+    metrics = [("speedup", "Speedup"), ("efficiency", "Efficiency"), ("time", "Time")]
     columns = [("method", "Method"), ("schedule", "Schedule"), ("threads", "Threads"), ("time_s", "Time (s)"),
                ("speedup_vs_seq", "Speedup"), ("efficiency", "Efficiency"), ("verified", "Verified")]
 

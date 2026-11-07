@@ -26,6 +26,7 @@ def main(results_dir):
 
     if (results_dir / "bench.csv").exists():
         rows = charts.read_csv(results_dir / "bench.csv")
+        save(charts.speedup_chart(rows, "time"), "time.png")
         save(charts.speedup_chart(rows, "speedup"), "speedup.png")
         save(charts.speedup_chart(rows, "efficiency"), "efficiency.png")
     if (results_dir / "blur_sizes.csv").exists():
