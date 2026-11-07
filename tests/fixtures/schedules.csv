@@ -1,0 +1,13 @@
+filter,blur_size,method,schedule,threads,time_s,speedup_vs_seq,efficiency,speedup_vs_self_1thread,verified
+blur,5,seq,,1,0.000864,1.000,1.000,1.000,ref
+blur,5,omp_rows,static,1,0.000869,0.994,0.994,1.000,ok
+blur,5,omp_rows,static,2,0.000600,1.439,0.720,1.447,ok
+blur,5,omp_rows,static,4,0.000519,1.666,0.416,1.675,ok
+blur,5,seq,,1,0.000854,1.000,1.000,1.000,ref
+blur,5,omp_rows,dynamic,1,0.000880,0.970,0.970,1.000,ok
+blur,5,omp_rows,dynamic,2,0.000611,1.396,0.698,1.439,ok
+blur,5,omp_rows,dynamic,4,0.000631,1.353,0.338,1.394,ok
+blur,5,seq,,1,0.000864,1.000,1.000,1.000,ref
+blur,5,omp_rows,guided,1,0.000864,1.000,1.000,1.000,ok
+blur,5,omp_rows,guided,2,0.000585,1.477,0.738,1.477,ok
+blur,5,omp_rows,guided,4,0.000491,1.760,0.440,1.760,ok
