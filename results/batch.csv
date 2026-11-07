@@ -1,0 +1,10 @@
+strategy,filter,blur_size,threads,time_s,speedup_vs_seq,efficiency,images_per_s,verified
+seq,blur,5,1,56.708513,1.000,1.000,52.90,ok
+per_row,blur,5,1,56.685046,1.000,1.000,52.92,ok
+per_image,blur,5,1,56.845512,0.998,0.998,52.77,ok
+per_row,blur,5,2,29.843031,1.900,0.950,100.53,ok
+per_image,blur,5,2,30.813544,1.840,0.920,97.36,ok
+per_row,blur,5,4,20.956596,2.706,0.676,143.15,ok
+per_image,blur,5,4,17.293606,3.279,0.820,173.47,ok
+per_row,blur,5,8,14.146012,4.009,0.501,212.07,ok
+per_image,blur,5,8,13.202539,4.295,0.537,227.23,ok

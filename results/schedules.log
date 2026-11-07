@@ -1,0 +1,42 @@
+> pdc_conv bench --size 12000 --kernel blur --methods omp_rows --schedule static --threads 1,2,4,8 --reps 3 --csv C:\Users\shayan\AppData\Local\Temp\tmpbfuahaqx\part.csv
+Image 12000x12000 (412.0 MB RGB), reps=3 (best-of), machine procs=8, tile=16x2048, fuse-bh=16, schedule=static, timer res=1e-07 s
+Generating input...
+
+=== blur ===
+variant         thr    time(s)   speedup     eff  verify
+seq               1     2.4917      1.00    1.00  reference (T1)
+omp_rows          1     2.4713      1.01    1.01  ok
+omp_rows          2     1.3221      1.88    0.94  ok
+omp_rows          4     0.7882      3.16    0.79  ok
+omp_rows          8     0.5778      4.31    0.54  ok
+
+ALL VARIANTS MATCH THE SEQUENTIAL REFERENCE -- results written to C:\Users\shayan\AppData\Local\Temp\tmpbfuahaqx\part.csv
+
+> pdc_conv bench --size 12000 --kernel blur --methods omp_rows --schedule dynamic --threads 1,2,4,8 --reps 3 --csv C:\Users\shayan\AppData\Local\Temp\tmpbfuahaqx\part.csv
+Image 12000x12000 (412.0 MB RGB), reps=3 (best-of), machine procs=8, tile=16x2048, fuse-bh=16, schedule=dynamic, timer res=1e-07 s
+Generating input...
+
+=== blur ===
+variant         thr    time(s)   speedup     eff  verify
+seq               1     2.5112      1.00    1.00  reference (T1)
+omp_rows          1     2.4727      1.02    1.02  ok
+omp_rows          2     1.2721      1.97    0.99  ok
+omp_rows          4     0.7737      3.25    0.81  ok
+omp_rows          8     0.5734      4.38    0.55  ok
+
+ALL VARIANTS MATCH THE SEQUENTIAL REFERENCE -- results written to C:\Users\shayan\AppData\Local\Temp\tmpbfuahaqx\part.csv
+
+> pdc_conv bench --size 12000 --kernel blur --methods omp_rows --schedule guided --threads 1,2,4,8 --reps 3 --csv C:\Users\shayan\AppData\Local\Temp\tmpbfuahaqx\part.csv
+Image 12000x12000 (412.0 MB RGB), reps=3 (best-of), machine procs=8, tile=16x2048, fuse-bh=16, schedule=guided, timer res=1e-07 s
+Generating input...
+
+=== blur ===
+variant         thr    time(s)   speedup     eff  verify
+seq               1     2.4725      1.00    1.00  reference (T1)
+omp_rows          1     2.4741      1.00    1.00  ok
+omp_rows          2     1.2753      1.94    0.97  ok
+omp_rows          4     0.7683      3.22    0.80  ok
+omp_rows          8     0.5733      4.31    0.54  ok
+
+ALL VARIANTS MATCH THE SEQUENTIAL REFERENCE -- results written to C:\Users\shayan\AppData\Local\Temp\tmpbfuahaqx\part.csv
+

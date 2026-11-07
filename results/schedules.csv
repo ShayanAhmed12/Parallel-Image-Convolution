@@ -1,0 +1,16 @@
+filter,blur_size,method,schedule,threads,time_s,speedup_vs_seq,efficiency,speedup_vs_self_1thread,verified
+blur,5,seq,,1,2.491701,1.000,1.000,1.000,ref
+blur,5,omp_rows,static,1,2.471315,1.008,1.008,1.000,ok
+blur,5,omp_rows,static,2,1.322108,1.885,0.942,1.869,ok
+blur,5,omp_rows,static,4,0.788157,3.161,0.790,3.136,ok
+blur,5,omp_rows,static,8,0.577803,4.312,0.539,4.277,ok
+blur,5,seq,,1,2.511163,1.000,1.000,1.000,ref
+blur,5,omp_rows,dynamic,1,2.472691,1.016,1.016,1.000,ok
+blur,5,omp_rows,dynamic,2,1.272092,1.974,0.987,1.944,ok
+blur,5,omp_rows,dynamic,4,0.773744,3.245,0.811,3.196,ok
+blur,5,omp_rows,dynamic,8,0.573371,4.380,0.547,4.313,ok
+blur,5,seq,,1,2.472521,1.000,1.000,1.000,ref
+blur,5,omp_rows,guided,1,2.474099,0.999,0.999,1.000,ok
+blur,5,omp_rows,guided,2,1.275338,1.939,0.969,1.940,ok
+blur,5,omp_rows,guided,4,0.768301,3.218,0.805,3.220,ok
+blur,5,omp_rows,guided,8,0.573256,4.313,0.539,4.316,ok
