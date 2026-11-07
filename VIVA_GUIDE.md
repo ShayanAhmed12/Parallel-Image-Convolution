@@ -149,7 +149,7 @@ stdout is unbuffered so the app sees each line as it is printed.
 | `run_method` | `omp_set_num_threads`, `omp_set_schedule` | thread count and Rows schedule from the command line |
 | `run_tiled` | `parallel for collapse(2) schedule(static)` | two tile loops become one list of tiles, enough pieces for all threads |
 | `run_separable` | `parallel` + two `for` | one team for both passes; implicit barrier between them is required |
-| `run_separable_fused` | `parallel` + `for`, private buffer per thread | each thread keeps its intermediate in its own cache; no barrier |
+| `run_separable_fused` | `parallel` + `for`, private buffer per thread | each thread keeps its intermediate in a small private buffer (meant to stay in the cache); no barrier |
 | `run_batch` | `parallel for schedule(dynamic, 1)`; `parallel` + `for schedule(dynamic, 1)` | hand whole images to whichever thread is free |
 | `image_count_differences` | `parallel for reduction(+ : differences)` | each thread counts privately; counts added at the end, no race |
 | `first_touch`, `image_make_test` | `parallel for schedule(static)` | prepare buffers in parallel before timing |
@@ -169,7 +169,8 @@ shared for writing, so there is nothing to protect.
 3. **Warm-up thread team**: creating threads takes time; it is done once, outside.
 4. **Junk output before each method (0xA5)**: a broken method that writes nothing
    cannot pass verification by finding the previous method's output.
-5. **Byte-by-byte verification** after every method, at every thread count.
+5. **Byte-by-byte verification** after every method, at every thread count (batch:
+   both strategies, before timing).
 6. **Precise timer (QPC)**: 1 ms resolution would be 10 % error on a 10 ms run.
 7. **Large images** (12000 x 12000 = 432 MB per image) so each run is long enough
    to measure and the data does not fit in the cache, as in the proposal.
@@ -177,6 +178,8 @@ shared for writing, so there is nothing to protect.
 
 ## 5. Reading the graphs (results/plots/)
 
+- **time.png**: x = threads, y = seconds. Dashed line = ideal (T1 / p). The plain
+  numbers behind the other graphs.
 - **speedup.png**: x = threads, y = T1 / Tp. Dashed line = ideal (p threads, p
   times faster). The closer a line is to the dashed one, the better it scales.
   Separable methods start above 1 at one thread because they do less work, not
@@ -212,8 +215,9 @@ shared for writing, so there is nothing to protect.
 5. **And dynamic? guided?** Dynamic: threads take the next chunk (here 1 row) when
    they finish one, which balances uneven work but costs a little per chunk.
    Guided: like dynamic, but chunks start large and shrink, so fewer hand-outs.
-6. **Which schedule was best here, and why?** They were within 2 % (4.31x, 4.38x,
-   4.31x at 8 threads). All rows cost about the same, so static is already balanced;
+6. **Which schedule was best here, and why?** None, measurably: they were within 2 %
+   (4.31x, 4.38x, 4.31x at 8 threads), less than the variation between repeated
+   runs, so the order means nothing. All rows cost about the same, so static is already balanced;
    dynamic's cost per hand-out (12000 rows) is tiny next to 0.2 ms of work per row.
    Dynamic would win if rows had very different costs.
 7. **What is `collapse(2)`?** It merges two nested loops into one iteration space,
@@ -228,14 +232,15 @@ shared for writing, so there is nothing to protect.
     byte and writes then reads a full-size intermediate (4 bytes per channel, 1.7 GB
     at 12000²) through main memory. It is limited by memory bandwidth, which all
     cores share, plus the barrier.
-11. **Did fusion help?** Only when the buffer fits in the cache. The idea: each
-    thread uses a small buffer (16 + 2r rows), so the intermediate need not go to
-    main memory and there is no barrier. At 8000 x 8000 it scaled well (8.7x to
-    12.7x over `seq` for blur 9 and up). At 12000 x 12000 a row of sums is 144 KB,
-    so the buffer is 2.9 MB (5x5) to 4.3 MB (15x15): bigger than L2 (256 KB), and 4
-    of them exceed the 8 MB L3. Plus the 2r recomputed rows (+25 % work for 5x5,
-    +88 % for 15x15). So there it was not faster than `omp_sep`. The fix would be
-    column strips (narrow blocks); we kept the simple version and report it.
+11. **Did fusion help?** No, not at our sizes. The idea: each thread uses a small
+    buffer (16 + 2r rows), so the intermediate need not go to main memory and there
+    is no barrier. But at 12000 x 12000 a row of sums is 144 KB, so the buffer is
+    2.9 MB (5x5) to 4.3 MB (15x15): bigger than L2 (256 KB), and 4 of them exceed the
+    8 MB L3. Plus the 2r recomputed rows (+25 % work for 5x5, +88 % for 15x15). So it
+    was not faster than `omp_sep`. At 8000 x 8000 it scaled a little better on itself
+    (2.6 to 2.8x at 4 threads), but its buffer (1.9 to 3.8 MB) still does not fit,
+    and we did not run `omp_sep` there to compare. The fix would be column strips
+    (narrow blocks) so the buffer fits in L2; we kept the simple version and report it.
 12. **Why not 8x speedup with 8 threads?** The test CPU (i7-3770) has 4 physical
     cores; threads 5-8 are hyper-threads sharing those cores. Also memory bandwidth
     is shared, there is a serial part (starting threads, borders, the barrier), and
@@ -256,7 +261,8 @@ shared for writing, so there is nothing to protect.
     when a page is first written. Doing it in advance, in parallel, keeps page faults
     out of the timing (and on multi-socket machines puts pages near their threads).
 17. **How do you know the parallel outputs are correct?** Every method's output is
-    compared byte by byte with the sequential one in every run (Verified column), and
+    compared byte by byte with the sequential one in every bench run (Verified
+    column), batch checks both strategies at every thread count before timing, and
     the tests check awkward sizes (1x1, 2x3, 128x1, 257x131 ...), all blur sizes and
     all schedules.
 18. **Why integers instead of floating point?** Floating-point addition in a
@@ -302,9 +308,9 @@ shared for writing, so there is nothing to protect.
   4 threads **3.0x**; best overall `omp_sep` 4 threads 0.57 s (**4.6x**).
 - Blur 15x15: `seq` 16.6 s; Tiled 8 threads 3.85 s (4.3x); `omp_sep` 4 threads
   1.45 s (**11.4x**, mostly from doing 2N instead of N² work).
-- Sharpen: only **1.6x** (memory-bound, about 10 GB/s). Sobel: **2.9x**.
+- Sharpen: only **1.6x** (memory-bound, about 10 GB/s moved). Sobel: **2.8 to 2.9x**.
 - Amdahl serial fraction (blur 5x5 Tiled): **0.107** at p = 4, **0.125** at p = 8.
-- Schedules: static 4.31x, dynamic 4.38x, guided 4.31x: within 2 %.
+- Schedules: static 4.31x, dynamic 4.38x, guided 4.31x: within 2 %, so no real winner.
 - Batch (3000 x 1024²): one image per thread 4.30x vs threads share each image
   4.01x at 8 threads; 3.28x vs 2.71x at 4.
 - Every result row verified identical to sequential.

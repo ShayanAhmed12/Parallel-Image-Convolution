@@ -5,8 +5,8 @@ Shayan Ahmed (23K-0551), Rizwan Vadsariya (23K-0005), Aaqib (23K-0625)
 
 Blur (any odd size 3 to 25), sharpen and Sobel edge detection on 24-bit RGB images,
 written sequentially first and then parallelised with OpenMP in six ways. Every
-parallel method produces exactly the same bytes as the sequential one, and the
-program checks that on every run. The written report is [REPORT.md](REPORT.md);
+parallel method produces exactly the same bytes as the sequential one; `bench` and
+`batch` check that at every thread count, and the app checks it on every Apply. The written report is [REPORT.md](REPORT.md);
 the study guide for the viva is [VIVA_GUIDE.md](VIVA_GUIDE.md).
 
 ## Run the app (demo laptop, nothing to install)

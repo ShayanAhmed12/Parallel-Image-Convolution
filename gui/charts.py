@@ -13,6 +13,9 @@ from .engine import METHODS
 
 # what the methods are called on screen, e.g. "omp_tiled" -> "Tiled"
 METHOD_LABELS = {code: name for code, name, _ in METHODS}
+# one fixed colour per method, so a method looks the same on every chart
+METHOD_COLORS = {"seq": "tab:gray", "omp_rows": "tab:blue", "omp_tiled": "tab:orange",
+                 "seq_sep": "tab:purple", "omp_sep": "tab:green", "omp_sep_fused": "tab:red"}
 STRATEGY_LABELS = {"per_row": "Threads share each image", "per_image": "One image per thread"}
 
 
@@ -71,9 +74,10 @@ def speedup_chart(rows, metric="speedup"):
             points.sort()
             label = METHOD_LABELS.get(method, method)
             if len(points) == 1:     # a one-thread method: a flat reference line
-                ax.axhline(points[0][1], ls=":", lw=1.4, label=label)
+                ax.axhline(points[0][1], ls=":", lw=1.4, color=METHOD_COLORS.get(method), label=label)
             else:
-                ax.plot([p[0] for p in points], [p[1] for p in points], marker="o", label=label)
+                ax.plot([p[0] for p in points], [p[1] for p in points], marker="o",
+                        color=METHOD_COLORS.get(method), label=label)
         _ideal_line(ax, metric, threads, methods)
         ax.set_title(title)
         _style(ax, "threads", ylabel, threads)

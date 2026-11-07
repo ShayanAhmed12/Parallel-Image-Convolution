@@ -33,9 +33,10 @@ is speedup / p.
   about 2 GB; the 12000 x 12000 blur benchmark needs about 3 GB in one process
   (input, reference and output images plus the separable intermediate). We moved
   to a 64-bit GCC.
-- **Timer.** MinGW's `omp_get_wtime()` only advances every 1 ms, which is up to 10 %
-  error on the shortest runs here, so on Windows the program reads
-  `QueryPerformanceCounter` instead.
+- **Timer.** MinGW's `omp_get_wtime()` only advances every 1 ms. That is under 1 %
+  of the shortest benchmark runs here (about 0.13 s), but 10 % or more of the
+  small-image runs the app does in the demo (a few ms), so on Windows the program
+  reads `QueryPerformanceCounter` instead.
 - **`-march=x86-64-v2`** (SSE4.2) instead of `-march=native`, so the same exe runs on
   the demo laptop whatever its CPU.
 
@@ -64,9 +65,11 @@ timed; the thread team started once before timing; the output filled with junk
 (0xA5) before each method so a method that writes nothing cannot pass; other
 programs closed during the final run.
 
-**Verification.** After every method, at every thread count, the output is
-compared byte by byte with the sequential output; the `verified` column of every
-CSV row is `ok`. The automatic tests (`tests/`) also check every method on awkward
+**Verification.** In `bench`, after every method at every thread count, the output
+is compared byte by byte with the sequential output; the `verified` column of every
+row is `ok`. In `batch`, both strategies are checked against the sequential output
+before timing. In the final batch run below this was done once, at 8 threads; the
+program now does it at every thread count (the seq row is then marked `ref`). The automatic tests (`tests/`) also check every method on awkward
 sizes (1x1, 2x3, 3x3, 4x7, 5x5, 17x9, 37x53, 128x1, 1x128, 257x131), blur sizes 3
 to 25, all three schedules, and flat all-0 / all-255 images at blur size 25.
 
@@ -97,6 +100,7 @@ Time in seconds, speedup T1 / Tp in brackets.
 One-thread separable times: blur 5x5 `seq_sep` 1.252 s (2.09x faster than `seq`),
 blur 15x15 `seq_sep` 3.009 s (5.51x). Every row verified `ok`.
 
+![time](results/plots/time.png)
 ![speedup](results/plots/speedup.png)
 ![efficiency](results/plots/efficiency.png)
 
@@ -166,10 +170,12 @@ is lower (0.088 at p = 4), because more arithmetic per byte hides the memory cos
 
 **Memory bandwidth limits sharpen and Sobel.** Sharpen does 5 operations per
 channel; one pass reads 432 MB and writes 432 MB (plus 432 MB of cache-line reads
-for the writes), about 1.3 GB in 0.13 s, roughly 10 GB/s, close to what this
-dual-channel DDR3 machine can deliver. More threads cannot make memory faster, so
-sharpen levels off at about 1.6x from 4 threads on. Sobel does more work per pixel
-(brightness of 8 neighbours, two gradients) and reaches 2.8x.
+for the writes), about 1.3 GB in 0.13 s, roughly 10 GB/s. We did not measure this
+machine's peak memory bandwidth; what points to memory as the limit is that sharpen
+levels off at about 1.6x from 4 threads on, while the compute-heavy blur keeps
+improving with the same threads. More threads cannot make memory faster. Sobel does
+more work per pixel (brightness of 8 neighbours, two gradients) and reaches 2.8 to
+2.9x.
 
 **Arithmetic per byte decides scaling (blur sweep).** The 2-D blur does N² weighted
 sums per channel, so it is compute-bound for every size and scales at 3.98 to 4.35x
@@ -195,14 +201,18 @@ contrary to what we expected. Two reasons, both visible in the numbers:
    work) and 14 per 16 rows for 15x15 (+88 %). With one thread, fused 15x15 takes
    3.875 s against 3.009 s for `seq_sep`.
 
-At 8000 x 8000 (blur sweep) fusion scales well (2.6 to 2.8x on itself at 4 threads),
-and for blur 9 and up it reaches 8.7x to 12.7x over `seq`. Making fusion pay off at
-12000 would need blocks that are narrow as well as short (column strips), so the
-buffer fits in L2. We kept the simpler version and report this as a measured
-limitation.
+The blur sweep (8000 x 8000) ran only `omp_sep_fused`, not `omp_sep`, so it cannot
+say whether fusion wins there. Fused scales a little better on itself at 8000 (2.6
+to 2.8x at 4 threads, against 1.9 to 2.5x for both separable methods at 12000), but
+its buffer is still 1.9 MB (5x5) to 3.8 MB (25x25) per thread, so it does not stay
+in the cache there either. Its 8.7x to 12.7x over `seq` for blur 9 and up comes
+mostly from doing 2N instead of N² operations. Making fusion pay off would need a
+buffer that fits in L2: blocks that are narrow as well as short (column strips). We
+kept the simpler version and report this as a measured limitation.
 
 **Scheduling.** The three schedules are within 2 % of each other (4.31x, 4.38x,
-4.31x at 8 threads). Every row costs almost the same, so `static` is already
+4.31x at 8 threads), less than the variation between repeated runs of the same
+setting, so these runs do not rank them. Every row costs almost the same, so `static` is already
 balanced; `dynamic, 1` hands out 12000 single rows, which costs very little next to
 a row that takes about 0.2 ms of filtering. The thread maps show the difference in assignment
 even though the time hardly changes.
@@ -248,9 +258,9 @@ sequential program for every size and thread count tested. On a 4-core / 8-threa
 CPU the 2-D filters reach about 3x with 4 threads and 4.3x with 8 (blur), limited
 by physical cores and memory bandwidth; low-arithmetic filters (sharpen) are
 memory-bound at 1.6x. The separable blur gives the fastest blur by doing less work
-(up to 11.4x over `seq` for 15x15), but scales poorly because it is memory-bound,
-and fusing its passes helps only when the per-thread buffer fits in the cache
-(8000 width, not 12000). For many small images, one image per thread beats
+(up to 11.4x over `seq` for 15x15), but scales poorly because it is memory-bound.
+Fusing its passes did not beat the plain separable version at 12000 width, because
+the per-thread buffer (2.9 to 4.3 MB) does not fit in the cache. For many small images, one image per thread beats
 splitting each image. The experiments match the course concepts: Amdahl's law,
 memory-bound vs compute-bound work, the cost of barriers, and the limits of
 Hyper-Threading.
