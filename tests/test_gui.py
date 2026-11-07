@@ -212,5 +212,58 @@ class AppTests(unittest.TestCase):
             app.destroy()
 
 
+class RunTabTests(unittest.TestCase):
+    def setUp(self):
+        self.app = load_app_module().App()
+
+    def tearDown(self):
+        self.app.quit_app()
+
+    def choose_threads(self, tab, wanted):
+        for t, var in tab.thread_vars.items():
+            var.set(t in wanted)
+
+    def test_bench_tab_run(self):
+        tab = self.app.bench_tab
+        tab.size.set("256")
+        tab.filter.set("blur")
+        self.choose_threads(tab, {1, 2})
+        tab.reps.set("1")
+        tab.run()
+        self.assertTrue(pump(self.app, lambda: tab.last_code is not None, 30))
+        self.assertEqual(tab.last_code, 0)
+        rows = charts.read_csv(self.app.runs / "bench.csv")
+        self.assertEqual(len(tab.table.get_children()), len(rows))
+        self.assertIsNotNone(tab.canvas)
+
+    def test_batch_tab_run(self):
+        tab = self.app.batch_tab
+        tab.count.set("16")
+        tab.size.set("64")
+        self.choose_threads(tab, {1, 2})
+        tab.reps.set("1")
+        tab.run()
+        self.assertTrue(pump(self.app, lambda: tab.last_code is not None, 30))
+        self.assertEqual(tab.last_code, 0)
+        self.assertEqual(len(tab.table.get_children()), 5)
+        self.assertIsNotNone(tab.canvas)
+
+    def test_bench_tab_stop(self):
+        tab = self.app.bench_tab
+        tab.size.set("6000")
+        tab.filter.set("blur")
+        tab.blur_size.set("25")
+        self.choose_threads(tab, {1})
+        tab.reps.set("1")
+        tab.run()
+        pump(self.app, lambda: False, 1)
+        tab.stop()
+        self.assertTrue(pump(self.app, lambda: tab.last_code is not None, 3))
+        self.assertEqual(tab.last_code, -1)
+        self.assertIn("Image 6000x6000", tab.log.get("1.0", "end"))
+        self.assertEqual(len(tab.table.get_children()), 0)
+        self.assertIsNone(tab.canvas)
+
+
 if __name__ == "__main__":
     unittest.main()

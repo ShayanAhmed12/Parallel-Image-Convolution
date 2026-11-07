@@ -190,6 +190,9 @@ static int command_filter(const FilterJob *job, const RunOptions *base) {
 }
 
 int main(int argc, char **argv) {
+    /* print every line at once, so a program reading our output (the app) sees progress live;
+     * printing happens outside the timed regions, so this costs nothing measurable */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (argc < 2) { usage(); return 1; }
     const char *command = argv[1];
 
