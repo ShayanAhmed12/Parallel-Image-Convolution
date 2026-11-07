@@ -26,11 +26,12 @@ $is64 = $target -like 'x86_64-*'
 Write-Host "Compiler: $gcc ($target)"
 
 $flags = @('-O3', '-march=x86-64-v2', '-fopenmp', '-Wall', '-Wextra', '-std=gnu11')
+$sources = (Get-ChildItem (Join-Path $project 'src') -Filter '*.c').FullName
 
 if ($is64) {
     # mingw-w64: link libgomp/winpthreads statically so the exe is self-contained
     # and can never pick up a 32-bit libgomp-1.dll lying next to it.
-    & $gcc @flags -o pdc_conv.exe src\pdc_conv.c -static -lm
+    & $gcc @flags -o pdc_conv.exe @sources -static -lm
     if ($LASTEXITCODE -ne 0) { throw 'gcc failed to build pdc_conv.exe.' }
     # Runtime DLLs left over from an old 32-bit build would only cause confusion.
     foreach ($runtime in 'libgomp-1.dll', 'pthreadGC2.dll') {
@@ -58,7 +59,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'dlltool failed while creating the pthread import library.' }
     }
 
-    & $gcc @flags -o pdc_conv.exe src\pdc_conv.c -lm "-L$temp" -lpthread
+    & $gcc @flags -o pdc_conv.exe @sources -lm "-L$temp" -lpthread
     if ($LASTEXITCODE -ne 0) { throw 'gcc failed to build pdc_conv.exe.' }
 
     foreach ($runtime in 'libgomp-1.dll', 'pthreadGC2.dll') {
