@@ -153,7 +153,8 @@ class ScheduleAndThreadMapTests(TempDirTest):
             self.assertEqual(set(row), {0 if y < 20 else 1}, f"row {y}")
 
     def test_threadmap_dynamic_interleaves(self):
-        ids = self.threadmap("64x400", "--variant", "omp_rows", "--schedule", "dynamic", "--threads", 4)
+        # rows wide enough that every thread is awake before the rows run out
+        ids = self.threadmap("2048x400", "--variant", "omp_rows", "--schedule", "dynamic", "--threads", 4)
         row_owner = []
         for row in ids:
             self.assertEqual(len(set(row)), 1)      # a row is written by one thread
