@@ -20,6 +20,8 @@ Tabs: **Filter** (one image, one method, compared with sequential, optional thre
 map), **Benchmark** (every method at several thread counts, chart and table),
 **Batch** (many small images). Help > Open source folder shows the C code.
 
+![Filter tab](docs/screenshots/filter_tab.png)
+
 ## Build from source (development PC)
 
 - Compiler: WinLibs GCC 16.2, x86_64, UCRT, extracted to `C:\mingw64`

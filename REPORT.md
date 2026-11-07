@@ -222,6 +222,16 @@ the fixed-size code. All speedups are measured against the same new sequential
 version, so the parallel conclusions are not affected; we chose one clear
 implementation for all sizes over a separate fast path for 5x5.
 
+### 4.6 The desktop app
+
+A small Windows app (`gui/`) runs the same program for the demo; it does no
+filtering or timing itself. The Filter tab shows one method against sequential with
+the thread map; the Benchmark and Batch tabs run `bench` and `batch` and draw the
+same charts as above.
+
+![Filter tab](docs/screenshots/filter_tab.png)
+![Benchmark tab](docs/screenshots/benchmark_tab.png)
+
 ## 6. Deviations from the proposal
 
 - 32-bit MinGW replaced by a 64-bit GCC, needed for the 12000 x 12000 image.
