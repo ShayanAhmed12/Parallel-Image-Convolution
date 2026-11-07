@@ -1,8 +1,5 @@
 # Parallel Image Convolution / Filtering (OpenMP)
 
-PDC project, FAST-NUCES Karachi, Fall 2026, BCS-7B
-Shayan Ahmed (23K-0551), Rizwan Vadsariya (23K-0005), Aaqib (23K-0625)
-
 Blur (any odd size 3 to 25), sharpen and Sobel edge detection on 24-bit RGB images,
 written sequentially first and then parallelised with OpenMP in six ways. Every
 parallel method produces exactly the same bytes as the sequential one; `bench` and
