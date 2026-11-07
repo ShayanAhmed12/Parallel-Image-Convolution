@@ -79,7 +79,7 @@ int run_bench(const BenchOptions *o) {
     int all_match = 1;
     for (int k = FILTER_BLUR; k <= FILTER_SOBEL; k++) {
         if (!(o->filters & (1u << k))) continue;
-        Filter f = filter_make((FilterKind)k, 5);
+        Filter f = filter_make((FilterKind)k, o->blur_size);
         printf("\n=== %s ===\n%-14s %4s %10s %9s %7s  %s\n", filter_name(f.kind), "variant", "thr",
                "time(s)", "speedup", "eff", "verify");
 
@@ -133,7 +133,7 @@ int run_batch(const BatchOptions *o) {
     const int N = o->count, S = o->size;
     const int pool_size = N < POOL_MAX ? N : POOL_MAX;
     const size_t bytes = (size_t)S * S * 3;
-    const Filter f = filter_make(o->filter, 5);
+    const Filter f = filter_make(o->filter, o->blur_size);
     printf("Batch: %d images of %dx%d, kernel=%s, pool of %d distinct images cycled, reps=%d, "
            "timer res=%.0e s\n", N, S, S, filter_name(f.kind), pool_size, o->reps, wtick());
 

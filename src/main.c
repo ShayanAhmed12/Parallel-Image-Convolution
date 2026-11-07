@@ -8,6 +8,7 @@
  *                   [--threads 1,2,4,8] [--reps 3] [--csv results_bench.csv]
  *   pdc_conv batch  [--n 2000] [--bsize 1024] [--kernel blur]
  *                   [--threads 1,2,4,8] [--reps 2] [--csv results_batch.csv]
+ *   --blur-size N (odd, 3..25, default 5) works with filter, bench and batch
  *   tuning:         --tile HxW (default 16x2048)   --fuse-bh R (default 16)
  *
  * No parallel work happens here; see parallel.c and bench.c.
@@ -29,6 +30,7 @@ static void usage(void) {
          "                  [--threads 1,2,4,8] [--reps 3] [--csv results_bench.csv]\n"
          "  pdc_conv batch  [--n 2000] [--bsize 1024] [--kernel blur]\n"
          "                  [--threads 1,2,4,8] [--reps 2] [--csv results_batch.csv]\n\n"
+         "  --blur-size N   odd blur window 3..25 (default 5) for filter, bench, batch\n"
          "  tuning:         --tile HxW (omp_tiled, default 16x2048)  --fuse-bh R (default 16)");
 }
 
@@ -45,6 +47,15 @@ static int parse_thread_list(const char *text, int *out, int max) {
     }
     if (n == 0) die("empty thread list");
     return n;
+}
+
+/* "15" -> 15; anything that is not an odd number from 3 to 25 is an error */
+static int parse_blur_size(const char *text) {
+    char *end;
+    long n = strtol(text, &end, 10);
+    if (end == text || *end || n < BLUR_SIZE_MIN || n > BLUR_SIZE_MAX || n % 2 == 0)
+        die("blur size must be an odd number from %d to %d", BLUR_SIZE_MIN, BLUR_SIZE_MAX);
+    return (int)n;
 }
 
 /* "4096" -> 4096x4096, "800x600" -> 800x600 */
@@ -72,9 +83,9 @@ static int default_thread_list(int *list) {
 }
 
 /* filter: apply one method once and report the time */
-static int command_filter(const char *in_path, int width, int height, FilterKind kind,
+static int command_filter(const char *in_path, int width, int height, FilterKind kind, int blur_size,
                           Method method, const RunOptions *base, const char *out_path) {
-    Filter f = filter_make(kind, 5);
+    Filter f = filter_make(kind, blur_size);
     if (method_blur_only(method) && kind != FILTER_BLUR)
         die("method %s only supports --kernel blur", method_name(method));
 
@@ -108,7 +119,7 @@ int main(int argc, char **argv) {
     if (argc < 2) { usage(); return 1; }
     const char *command = argv[1];
 
-    int width = 4096, height = 4096, reps = -1, count = 2000, batch_size = 1024;
+    int width = 4096, height = 4096, reps = -1, count = 2000, batch_size = 1024, blur_size = 5;
     int threads[MAX_THREAD_COUNTS], n_threads = 0;
     const char *kernel = NULL, *in_path = NULL, *out_path = NULL, *csv = NULL;
     const char *method_text = "omp_rows";
@@ -121,6 +132,7 @@ int main(int argc, char **argv) {
         i++;
         if      (!strcmp(arg, "--size"))    parse_size(value, &width, &height);
         else if (!strcmp(arg, "--kernel"))  kernel = value;
+        else if (!strcmp(arg, "--blur-size")) blur_size = parse_blur_size(value);
         else if (!strcmp(arg, "--threads")) n_threads = parse_thread_list(value, threads, MAX_THREAD_COUNTS);
         else if (!strcmp(arg, "--reps"))    reps = atoi(value);
         else if (!strcmp(arg, "--csv"))     csv = value;
@@ -157,7 +169,7 @@ int main(int argc, char **argv) {
         if (!filter_from_name(kernel ? kernel : "blur", &kind)) die("filter needs one kernel: blur|sharpen|sobel");
         if (!method_from_name(method_text, &method)) die("unknown --variant %s", method_text);
         opt.threads = threads[0];
-        return command_filter(in_path, width, height, kind, method, &opt, out_path);
+        return command_filter(in_path, width, height, kind, blur_size, method, &opt, out_path);
     }
 
     if (!strcmp(command, "bench")) {
@@ -166,6 +178,7 @@ int main(int argc, char **argv) {
         b.width = width;
         b.height = height;
         b.filters = parse_filter_mask(kernel ? kernel : "all");
+        b.blur_size = blur_size;
         memcpy(b.threads, threads, sizeof threads);
         b.n_threads = n_threads;
         b.reps = reps > 0 ? reps : 3;
@@ -182,6 +195,7 @@ int main(int argc, char **argv) {
         if (!filter_from_name(kernel ? kernel : "blur", &b.filter)) die("batch needs one kernel: blur|sharpen|sobel");
         if (count < 1 || batch_size < 1) die("bad --n or --bsize");
         b.count = count;
+        b.blur_size = blur_size;
         b.size = batch_size;
         memcpy(b.threads, threads, sizeof threads);
         b.n_threads = n_threads;

@@ -45,6 +45,11 @@ def read_ppm(path):
     return width, height, pixels
 
 
+def write_ppm(path, width, height, value):
+    """Write a P6 PPM where every byte is `value` (a flat test image)."""
+    Path(path).write_bytes(b"P6\n%d %d\n255\n" %(width, height) + bytes([value]) * (width * height * 3))
+
+
 def golden():
     lines = (ROOT / "tests" / "golden_sha256.txt").read_text().split("\n")
     return dict(line.split() for line in lines if line.strip())
@@ -78,6 +83,42 @@ class RegressionTests(TempDirTest):
                 result = run("bench", "--size", size, "--threads", "1,3,4", "--reps", "1",
                              "--csv", self.tmp / "bench.csv")
                 self.assertIn("ALL VARIANTS MATCH", result.stdout)
+
+
+class BlurSizeTests(TempDirTest):
+    """--blur-size N: odd sizes 3..25 with binomial weights, all methods identical."""
+
+    def test_blur_5_matches_golden(self):
+        image = self.tmp / "input.ppm"
+        out = self.tmp / "blur5.ppm"
+        run("gen", "--size", "257x131", "--out", image)
+        run("filter", "--in", image, "--kernel", "blur", "--blur-size", 5, "--variant", "seq", "--out", out)
+        self.assertEqual(sha256(out), golden()["blur"])
+
+    def test_blur_sizes_all_methods_match(self):
+        for blur_size in (3, 7, 15, 25):
+            for size in ("1x1", "4x7", "37x53", "257x131"):
+                with self.subTest(blur_size=blur_size, size=size):
+                    result = run("bench", "--kernel", "blur", "--blur-size", blur_size, "--size", size,
+                                 "--threads", "1,3", "--reps", "1", "--csv", self.tmp / "bench.csv")
+                    self.assertIn("ALL VARIANTS MATCH", result.stdout)
+
+    def test_blur_extremes(self):
+        for value in (255, 0):
+            image = self.tmp / f"flat{value}.ppm"
+            write_ppm(image, 64, 64, value)
+            for method in ("seq", "omp_sep"):
+                with self.subTest(value=value, method=method):
+                    out = self.tmp / f"out_{value}_{method}.ppm"
+                    run("filter", "--in", image, "--kernel", "blur", "--blur-size", 25,
+                        "--variant", method, "--threads", 4, "--out", out)
+                    self.assertEqual(read_ppm(out)[2], bytes([value]) * (64 * 64 * 3))
+
+    def test_invalid_blur_size(self):
+        for bad in ("4", "1", "27", "abc"):
+            with self.subTest(bad=bad):
+                result = run("filter", "--size", "8", "--kernel", "blur", "--blur-size", bad, expect=1)
+                self.assertIn("error: blur size must be an odd number from 3 to 25", result.stderr)
 
 
 if __name__ == "__main__":

@@ -63,6 +63,7 @@ size_t image_count_differences(const Image *a, const Image *b);  /* number of di
 
 typedef enum { FILTER_BLUR, FILTER_SHARPEN, FILTER_SOBEL } FilterKind;
 
+#define BLUR_SIZE_MIN 3    /* blur sizes are odd: 3, 5, 7, ... 25 */
 #define BLUR_SIZE_MAX 25
 
 /* A filter and its settings. For blur, size is the window width (5 means 5x5),
@@ -76,7 +77,7 @@ typedef struct {
     int shift;
 } Filter;
 
-Filter      filter_make(FilterKind kind, int blur_size);
+Filter      filter_make(FilterKind kind, int blur_size);   /* blur_size ignored unless blur */
 const char *filter_name(FilterKind kind);                    /* "blur", "sharpen", "sobel" */
 int         filter_from_name(const char *name, FilterKind *out);  /* 1 = ok, 0 = unknown */
 
@@ -134,6 +135,7 @@ int         method_is_parallel(Method m);
 typedef struct {
     int width, height;
     unsigned filters;                    /* bit (1 << FilterKind) for each filter to test */
+    int blur_size;
     int threads[MAX_THREAD_COUNTS], n_threads;
     int reps;                            /* best of this many runs */
     int tile_h, tile_w, fuse_rows;
@@ -143,6 +145,7 @@ typedef struct {
 typedef struct {
     int count, size;                     /* number of images, each size x size */
     FilterKind filter;
+    int blur_size;
     int threads[MAX_THREAD_COUNTS], n_threads;
     int reps;
     const char *csv;

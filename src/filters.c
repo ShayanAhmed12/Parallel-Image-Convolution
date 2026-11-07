@@ -43,10 +43,13 @@ Filter filter_make(FilterKind kind, int blur_size) {
         f.radius = 1;
         return f;
     }
-    if (blur_size != 5) die("blur size must be 5");
+    if (blur_size < BLUR_SIZE_MIN || blur_size > BLUR_SIZE_MAX || blur_size % 2 == 0)
+        die("blur size must be an odd number from %d to %d", BLUR_SIZE_MIN, BLUR_SIZE_MAX);
     f.size = blur_size;
     f.radius = blur_size / 2;
-    /* binomial weights: row (size-1) of Pascal's triangle, e.g. 1 4 6 4 1 */
+    /* binomial weights: row (size-1) of Pascal's triangle, e.g. 1 4 6 4 1.
+     * C(n,i) = C(n,i-1) * (n-i+1) / i is always a whole number; the largest
+     * (size 25: C(24,12) = 2704156) fits easily in 32 bits. */
     f.weights[0] = 1;
     for (int i = 1; i < f.size; i++)
         f.weights[i] = f.weights[i - 1] * (uint32_t)(f.size - i) / (uint32_t)i;
