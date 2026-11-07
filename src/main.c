@@ -5,7 +5,7 @@
  *   pdc_conv filter [--in img.ppm | --size N|WxH] --kernel blur|sharpen|sobel
  *                   [--variant METHOD] [--threads P] [--out out.ppm]
  *                   [--verify] [--csv f.csv] [--threadmap map.ppm]
- *   pdc_conv bench  [--size N|WxH] [--kernel all|blur|sharpen|sobel]
+ *   pdc_conv bench  [--size N|WxH] [--kernel all|blur|sharpen|sobel] [--methods m1,m2]
  *                   [--threads 1,2,4,8] [--reps 3] [--csv results_bench.csv]
  *   pdc_conv batch  [--n 2000] [--bsize 1024] [--kernel blur]
  *                   [--threads 1,2,4,8] [--reps 2] [--csv results_batch.csv]
@@ -29,7 +29,7 @@ static void usage(void) {
          "                  [--variant seq|omp_rows|omp_tiled|seq_sep|omp_sep|omp_sep_fused]\n"
          "                  [--threads P] [--out out.ppm]\n"
          "                  [--verify] [--csv filter.csv] [--threadmap map.ppm]\n"
-         "  pdc_conv bench  [--size N|WxH] [--kernel all|blur|sharpen|sobel]\n"
+         "  pdc_conv bench  [--size N|WxH] [--kernel all|blur|sharpen|sobel] [--methods m1,m2]\n"
          "                  [--threads 1,2,4,8] [--reps 3] [--csv results_bench.csv]\n"
          "  pdc_conv batch  [--n 2000] [--bsize 1024] [--kernel blur]\n"
          "                  [--threads 1,2,4,8] [--reps 2] [--csv results_batch.csv]\n\n"
@@ -53,6 +53,20 @@ static int parse_thread_list(const char *text, int *out, int max) {
     }
     if (n == 0) die("empty thread list");
     return n;
+}
+
+/* "omp_rows,omp_tiled" -> a bit mask of methods; seq is always included */
+static unsigned parse_method_mask(const char *text) {
+    char buf[256];
+    strncpy(buf, text, sizeof buf - 1);
+    buf[sizeof buf - 1] = 0;
+    unsigned mask = 1u << METHOD_SEQ;
+    for (char *t = strtok(buf, ","); t; t = strtok(NULL, ",")) {
+        Method m;
+        if (!method_from_name(t, &m)) die("unknown method %s", t);
+        mask |= 1u << m;
+    }
+    return mask;
 }
 
 /* "15" -> 15; anything that is not an odd number from 3 to 25 is an error */
@@ -160,7 +174,9 @@ static int command_filter(const FilterJob *job, const RunOptions *base) {
         FILE *csv = fopen(job->csv, "w");
         if (!csv) die("cannot open %s for writing", job->csv);
         fprintf(csv, "filter,blur_size,method,schedule,threads,width,height,time_s,seq_time_s,speedup,identical\n");
-        fprintf(csv, "%s,%d,%s,%s,%d,%d,%d,%.6f,", filter_name(job->kind), f.size, method_name(job->method),
+        char size_text[8] = "";   /* blur size column: empty for sharpen and sobel */
+        if (job->kind == FILTER_BLUR) snprintf(size_text, sizeof size_text, "%d", f.size);
+        fprintf(csv, "%s,%s,%s,%s,%d,%d,%d,%.6f,", filter_name(job->kind), size_text, method_name(job->method),
                 job->method == METHOD_ROWS ? schedule_name(opt.schedule) : "", threads, in.width, in.height, t);
         if (job->verify) fprintf(csv, "%.6f,%.3f,%s\n", seq_time, seq_time / t, identical ? "yes" : "no");
         else fprintf(csv, ",,\n");
@@ -182,6 +198,7 @@ int main(int argc, char **argv) {
     const char *kernel = NULL, *in_path = NULL, *out_path = NULL, *csv = NULL, *threadmap = NULL;
     int verify = 0;
     const char *method_text = "omp_rows";
+    unsigned method_mask = (1u << METHOD_COUNT) - 1;   /* bench: every method */
     RunOptions opt = run_options_default();
 
     for (int i = 2; i < argc; i++) {
@@ -203,6 +220,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(arg, "--in"))      in_path = value;
         else if (!strcmp(arg, "--out"))     out_path = value;
         else if (!strcmp(arg, "--variant")) method_text = value;
+        else if (!strcmp(arg, "--methods")) method_mask = parse_method_mask(value);
         else if (!strcmp(arg, "--n"))       count = atoi(value);
         else if (!strcmp(arg, "--bsize"))   batch_size = atoi(value);
         else if (!strcmp(arg, "--tile")) {
@@ -244,6 +262,7 @@ int main(int argc, char **argv) {
         b.height = height;
         b.filters = parse_filter_mask(kernel ? kernel : "all");
         b.blur_size = blur_size;
+        b.methods = method_mask;
         memcpy(b.threads, threads, sizeof threads);
         b.n_threads = n_threads;
         b.reps = reps > 0 ? reps : 3;

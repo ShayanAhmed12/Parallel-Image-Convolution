@@ -44,8 +44,17 @@ static double best_time(Method m, const Filter *f, const Image *in, Image *out,
     return best;
 }
 
-static int filter_uses_scratch(unsigned filters) {
-    return (filters & (1u << FILTER_BLUR)) != 0;
+/* The full-size scratch buffer is only needed by the two-pass separable blurs. */
+static int needs_scratch(const BenchOptions *o) {
+    unsigned two_pass = (1u << METHOD_SEP_SEQ) | (1u << METHOD_SEP);
+    return (o->filters & (1u << FILTER_BLUR)) && (o->methods & two_pass);
+}
+
+/* the CSV's blur_size column: the size for blur, empty for sharpen and sobel */
+static const char *blur_size_text(const Filter *f, char *buf, size_t n) {
+    if (f->kind == FILTER_BLUR) snprintf(buf, n, "%d", f->size);
+    else buf[0] = 0;
+    return buf;
 }
 
 /* ------------------------------------------------------------------ */
@@ -66,7 +75,7 @@ int run_bench(const BenchOptions *o) {
     opt.tile_w = o->tile_w;
     opt.fuse_rows = o->fuse_rows;
     opt.schedule = o->schedule;
-    if (filter_uses_scratch(o->filters)) {
+    if (needs_scratch(o)) {
         opt.scratch = xalloc(bytes * sizeof(uint32_t));
         first_touch(opt.scratch, bytes * sizeof(uint32_t), 0);
     }
@@ -75,21 +84,25 @@ int run_bench(const BenchOptions *o) {
 
     FILE *csv = fopen(o->csv, "w");
     if (!csv) die("cannot open %s for writing", o->csv);
-    fprintf(csv, "kernel,variant,threads,time_s,speedup_vs_seq,efficiency,speedup_vs_self_1thread,verified\n");
+    fprintf(csv, "filter,blur_size,method,schedule,threads,time_s,speedup_vs_seq,efficiency,"
+                 "speedup_vs_self_1thread,verified\n");
 
     int all_match = 1;
     for (int k = FILTER_BLUR; k <= FILTER_SOBEL; k++) {
         if (!(o->filters & (1u << k))) continue;
         Filter f = filter_make((FilterKind)k, o->blur_size);
+        char size_text[8];
+        blur_size_text(&f, size_text, sizeof size_text);
         printf("\n=== %s ===\n%-14s %4s %10s %9s %7s  %s\n", filter_name(f.kind), "variant", "thr",
                "time(s)", "speedup", "eff", "verify");
 
         /* the reference: sequential output and time T1 */
         double t1 = best_time(METHOD_SEQ, &f, &in, &reference, &opt, o->reps);
         printf("%-14s %4d %10.4f %9.2f %7.2f  reference (T1)\n", "seq", 1, t1, 1.0, 1.0);
-        fprintf(csv, "%s,seq,1,%.6f,1.000,1.000,1.000,ref\n", filter_name(f.kind), t1);
+        fprintf(csv, "%s,%s,seq,,1,%.6f,1.000,1.000,1.000,ref\n", filter_name(f.kind), size_text, t1);
 
         for (int m = METHOD_SEQ + 1; m < METHOD_COUNT; m++) {
+            if (!(o->methods & (1u << m))) continue;
             if (method_blur_only((Method)m) && f.kind != FILTER_BLUR) continue;
             int counts = method_is_parallel((Method)m) ? o->n_threads : 1;
             double own_one_thread_time = 0;
@@ -107,9 +120,9 @@ int run_bench(const BenchOptions *o) {
                     snprintf(self_speedup, sizeof self_speedup, "%.3f", own_one_thread_time / t);
                 printf("%-14s %4d %10.4f %9.2f %7.2f  %s\n", method_name((Method)m), opt.threads, t,
                        speedup, efficiency, differences ? "MISMATCH" : "ok");
-                fprintf(csv, "%s,%s,%d,%.6f,%.3f,%.3f,%s,%s\n", filter_name(f.kind),
-                        method_name((Method)m), opt.threads, t, speedup, efficiency, self_speedup,
-                        differences ? "FAIL" : "ok");
+                fprintf(csv, "%s,%s,%s,%s,%d,%.6f,%.3f,%.3f,%s,%s\n", filter_name(f.kind), size_text,
+                        method_name((Method)m), m == METHOD_ROWS ? schedule_name(opt.schedule) : "",
+                        opt.threads, t, speedup, efficiency, self_speedup, differences ? "FAIL" : "ok");
                 fflush(stdout);
             }
         }
@@ -135,6 +148,8 @@ int run_batch(const BatchOptions *o) {
     const int pool_size = N < POOL_MAX ? N : POOL_MAX;
     const size_t bytes = (size_t)S * S * 3;
     const Filter f = filter_make(o->filter, o->blur_size);
+    char size_text[8];
+    blur_size_text(&f, size_text, sizeof size_text);
     printf("Batch: %d images of %dx%d, kernel=%s, pool of %d distinct images cycled, reps=%d, "
            "timer res=%.0e s\n", N, S, S, filter_name(f.kind), pool_size, o->reps, wtick());
 
@@ -167,7 +182,7 @@ int run_batch(const BatchOptions *o) {
 
     FILE *csv = fopen(o->csv, "w");
     if (!csv) die("cannot open %s for writing", o->csv);
-    fprintf(csv, "strategy,threads,time_s,speedup_vs_seq,efficiency,images_per_s,verified\n");
+    fprintf(csv, "strategy,filter,blur_size,threads,time_s,speedup_vs_seq,efficiency,images_per_s,verified\n");
 
     /* T1: every image filtered sequentially */
     double t1 = 1e30;
@@ -180,7 +195,8 @@ int run_batch(const BatchOptions *o) {
     }
     printf("\n%-10s %4s %10s %9s %7s %10s\n", "strategy", "thr", "time(s)", "speedup", "eff", "img/s");
     printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "seq", 1, t1, 1.0, 1.0, N / t1);
-    fprintf(csv, "seq,1,%.6f,1.000,1.000,%.2f,%s\n", t1, N / t1, ok ? "ok" : "FAIL");
+    fprintf(csv, "seq,%s,%s,1,%.6f,1.000,1.000,%.2f,%s\n", filter_name(f.kind), size_text, t1, N / t1,
+            ok ? "ok" : "FAIL");
 
     for (int i = 0; i < o->n_threads; i++) {
         const int p = o->threads[i];
@@ -196,32 +212,35 @@ int run_batch(const BatchOptions *o) {
             if (t < t_rows) t_rows = t;
         }
 
-        /* strategy B, per_image: each thread filters whole images on its own */
+        /* strategy B, per_image: each thread filters whole images on its own.
+         * Each thread writes into its own output image, made before the timer starts. */
+        Image *outputs = xalloc((size_t)p * sizeof(Image));
+        for (int t = 0; t < p; t++) outputs[t] = image_new(S, S);
         double t_images = 1e30;
         omp_set_num_threads(p);
         for (int r = 0; r < o->reps; r++) {
             double t0 = wtime();
-            /* each thread gets its own output image */
 #pragma omp parallel
             {
-                Image mine = image_new(S, S);
+                Image *mine = &outputs[omp_get_thread_num()];
                 /* hand out images one at a time to whichever thread is free */
 #pragma omp for schedule(dynamic, 1)
-                for (int n = 0; n < N; n++) filter_box(&f, &pool[n % pool_size], &mine, 0, S, 0, S);
-                image_free(&mine);
+                for (int n = 0; n < N; n++) filter_box(&f, &pool[n % pool_size], mine, 0, S, 0, S);
             }
             double t = wtime() - t0;
             if (t < t_images) t_images = t;
         }
+        for (int t = 0; t < p; t++) image_free(&outputs[t]);
+        xfree(outputs);
 
         printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "per_row", p, t_rows, t1 / t_rows,
                t1 / t_rows / p, N / t_rows);
         printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "per_image", p, t_images, t1 / t_images,
                t1 / t_images / p, N / t_images);
-        fprintf(csv, "per_row,%d,%.6f,%.3f,%.3f,%.2f,%s\n", p, t_rows, t1 / t_rows, t1 / t_rows / p,
-                N / t_rows, ok ? "ok" : "FAIL");
-        fprintf(csv, "per_image,%d,%.6f,%.3f,%.3f,%.2f,%s\n", p, t_images, t1 / t_images,
-                t1 / t_images / p, N / t_images, ok ? "ok" : "FAIL");
+        fprintf(csv, "per_row,%s,%s,%d,%.6f,%.3f,%.3f,%.2f,%s\n", filter_name(f.kind), size_text, p, t_rows,
+                t1 / t_rows, t1 / t_rows / p, N / t_rows, ok ? "ok" : "FAIL");
+        fprintf(csv, "per_image,%s,%s,%d,%.6f,%.3f,%.3f,%.2f,%s\n", filter_name(f.kind), size_text, p,
+                t_images, t1 / t_images, t1 / t_images / p, N / t_images, ok ? "ok" : "FAIL");
         fflush(stdout);
     }
     fclose(csv);

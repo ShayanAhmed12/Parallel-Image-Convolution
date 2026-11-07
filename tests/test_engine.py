@@ -196,5 +196,49 @@ class ScheduleAndThreadMapTests(TempDirTest):
         self.assertGreater(float(row["seq_time_s"]), 0)
 
 
+def read_csv_rows(path):
+    """Return (header line, list of row dicts) of an engine CSV."""
+    lines = Path(path).read_text().splitlines()
+    names = lines[0].split(",")
+    return lines[0], [dict(zip(names, line.split(","))) for line in lines[1:]]
+
+
+class BenchAndBatchCsvTests(TempDirTest):
+    def test_bench_csv(self):
+        csv = self.tmp / "bench.csv"
+        run("bench", "--size", 64, "--kernel", "blur", "--blur-size", 3, "--methods", "omp_rows",
+            "--schedule", "dynamic", "--threads", "1,2", "--reps", 1, "--csv", csv)
+        header, rows = read_csv_rows(csv)
+        self.assertEqual(header, "filter,blur_size,method,schedule,threads,time_s,speedup_vs_seq,"
+                                 "efficiency,speedup_vs_self_1thread,verified")
+        self.assertEqual([(r["method"], r["threads"]) for r in rows],
+                         [("seq", "1"), ("omp_rows", "1"), ("omp_rows", "2")])
+        self.assertEqual([r["schedule"] for r in rows], ["", "dynamic", "dynamic"])
+        self.assertEqual([r["verified"] for r in rows], ["ref", "ok", "ok"])
+        self.assertEqual({(r["filter"], r["blur_size"]) for r in rows}, {("blur", "3")})
+
+    def test_bench_csv_blur_size_empty_for_sharpen(self):
+        csv = self.tmp / "bench.csv"
+        run("bench", "--size", 32, "--kernel", "sharpen", "--methods", "omp_tiled",
+            "--threads", 2, "--reps", 1, "--csv", csv)
+        _, rows = read_csv_rows(csv)
+        self.assertEqual([(r["method"], r["blur_size"]) for r in rows], [("seq", ""), ("omp_tiled", "")])
+
+    def test_bench_unknown_method(self):
+        result = run("bench", "--size", 32, "--methods", "omp_fast", expect=1)
+        self.assertIn("error: unknown method omp_fast", result.stderr)
+
+    def test_batch_csv(self):
+        csv = self.tmp / "batch.csv"
+        run("batch", "--n", 16, "--bsize", 64, "--threads", "1,2", "--reps", 1, "--csv", csv)
+        header, rows = read_csv_rows(csv)
+        self.assertEqual(header, "strategy,filter,blur_size,threads,time_s,speedup_vs_seq,efficiency,"
+                                 "images_per_s,verified")
+        self.assertEqual([(r["strategy"], r["threads"]) for r in rows],
+                         [("seq", "1"), ("per_row", "1"), ("per_image", "1"), ("per_row", "2"), ("per_image", "2")])
+        self.assertEqual({r["verified"] for r in rows}, {"ok"})
+        self.assertEqual({(r["filter"], r["blur_size"]) for r in rows}, {("blur", "5")})
+
+
 if __name__ == "__main__":
     unittest.main()

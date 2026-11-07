@@ -141,6 +141,7 @@ void        threadmap_write_ppm(const char *path, const uint8_t *owner, int widt
 typedef struct {
     int width, height;
     unsigned filters;                    /* bit (1 << FilterKind) for each filter to test */
+    unsigned methods;                    /* bit (1 << Method) for each method to test; seq always runs */
     int blur_size;
     int threads[MAX_THREAD_COUNTS], n_threads;
     int reps;                            /* best of this many runs */
