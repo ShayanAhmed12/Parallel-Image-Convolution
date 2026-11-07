@@ -6,14 +6,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import tkinter as tk
 import unittest
 from pathlib import Path
+
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(ROOT))
 
-from gui import charts  # noqa: E402
+from gui import charts, engine  # noqa: E402
 
 PLOTS = ["speedup.png", "efficiency.png", "blur_sizes.png", "schedules.png", "batch.png"]
 DEMO = ["input.png", "blur.png", "sharpen.png", "sobel.png",
@@ -77,6 +81,135 @@ class RunAllTests(TempDirTest):
         for name in DEMO:
             self.assertTrue((self.tmp / "demo" / name).exists(), name)
         self.assertEqual(list((self.tmp / "demo").glob("*.ppm")), [])
+
+
+def pump(root, until, seconds):
+    """Process Tk events until until() is true or the time is up; return until()."""
+    end = time.time() + seconds
+    while time.time() < end and not until():
+        root.update()
+        time.sleep(0.02)
+    return until()
+
+
+class EngineHelperTests(TempDirTest):
+    def test_thread_choices(self):
+        self.assertEqual(engine.thread_choices(8), [1, 2, 4, 8])
+        self.assertEqual(engine.thread_choices(6), [1, 2, 4, 6])
+        self.assertEqual(engine.thread_choices(12), [1, 2, 4, 8, 12])
+        self.assertEqual(engine.thread_choices(1), [1])
+
+    def test_methods_for(self):
+        self.assertEqual([code for code, _ in engine.methods_for("blur")],
+                         ["seq", "omp_rows", "omp_tiled", "seq_sep", "omp_sep", "omp_sep_fused"])
+        self.assertEqual(engine.methods_for("sobel"),
+                         [("seq", "Sequential"), ("omp_rows", "Rows"), ("omp_tiled", "Tiled")])
+
+    def test_bench_memory(self):
+        self.assertEqual(engine.bench_memory_bytes(12000, 12000, True), 3 * 432_000_000 + 1_728_000_000)
+        self.assertEqual(engine.bench_memory_bytes(12000, 12000, False), 3 * 432_000_000)
+        self.assertEqual(engine.batch_memory_bytes(1024, 4), (8 * 3 + 4) * 1024 * 1024 * 3)
+
+    def test_to_ppm_modes(self):
+        sources = {
+            "rgba.png": Image.new("RGBA", (5, 4), (10, 20, 30, 128)),
+            "grey.png": Image.new("L", (3, 7), 99),
+            "deep.png": Image.new("I;16", (6, 2), 40000),
+            "palette.bmp": Image.new("RGB", (4, 4), (200, 0, 0)).convert("P"),
+            "one.jpg": Image.new("RGB", (1, 1), (0, 255, 0)),
+        }
+        for name, image in sources.items():
+            with self.subTest(name=name):
+                src = self.tmp / name
+                image.save(src)
+                dst = self.tmp / (name + ".ppm")
+                self.assertEqual(engine.to_ppm(src, dst), image.size)
+                self.assertTrue(dst.read_bytes().startswith(b"P6"))
+                with Image.open(dst) as converted:
+                    self.assertEqual((converted.mode, converted.size), ("RGB", image.size))
+
+    def test_system_info(self):
+        info = engine.system_info()
+        self.assertGreaterEqual(info.logical_cpus, 1)
+        self.assertGreater(info.free_ram, 0)
+        self.assertTrue(info.cpu_name)
+
+
+class EngineRunTests(TempDirTest):
+    def setUp(self):
+        super().setUp()
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.done = None
+        self.lines = []
+
+    def tearDown(self):
+        self.root.destroy()
+        super().tearDown()
+
+    def start(self, args):
+        return engine.EngineRun([str(a) for a in args], self.lines.append,
+                                lambda code, err: setattr(self, "done", (code, err)), self.root)
+
+    def test_engine_run_path_with_spaces(self):
+        folder = self.tmp / "my dir"
+        folder.mkdir()
+        image = folder / "my photo (1)+x.ppm"
+        csv = folder / "out (2).csv"
+        subprocess.run([str(engine.engine_path()), "gen", "--size", "40x30", "--out", str(image)], check=True)
+        self.start(["filter", "--in", image, "--kernel", "blur", "--variant", "omp_rows", "--threads", 2,
+                    "--verify", "--csv", csv])
+        self.assertTrue(pump(self.root, lambda: self.done is not None, 20))
+        self.assertEqual(self.done[0], 0, self.done[1])
+        self.assertTrue(any("identical: yes" in line for line in self.lines))
+        self.assertEqual(charts.read_csv(csv)[0]["identical"], "yes")
+
+    def test_engine_run_out_of_memory(self):
+        self.start(["bench", "--size", 100000, "--kernel", "blur", "--threads", 1])
+        self.assertTrue(pump(self.root, lambda: self.done is not None, 30))
+        self.assertNotEqual(self.done[0], 0)
+        self.assertIn("out of memory", self.done[1])
+
+    def test_engine_run_stop(self):
+        run = self.start(["bench", "--size", 6000, "--kernel", "blur", "--blur-size", 25, "--threads", 1])
+        pump(self.root, lambda: False, 1)
+        self.assertTrue(run.running)
+        stopped_at = time.time()
+        run.stop()
+        self.assertTrue(pump(self.root, lambda: self.done is not None, 2.5))
+        self.assertLess(time.time() - stopped_at, 2.5)
+        self.assertEqual(self.done[0], -1)
+        self.assertFalse(run.running)
+
+
+def load_app_module():
+    """Import gui/app.pyw (a .pyw file, so it needs an explicit loader)."""
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("app", str(ROOT / "gui" / "app.pyw"))
+    spec = importlib.util.spec_from_loader("app", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+class AppTests(unittest.TestCase):
+    def test_app_filter_apply(self):
+        app = load_app_module().App()
+        try:
+            tab = app.filter_tab
+            tab.source.set("generated")
+            tab.size.set("256")
+            tab.filter.set("sobel")
+            tab.on_filter_change()
+            tab.set_method("omp_tiled")
+            tab.threads.set("2")
+            tab.show_map.set(True)
+            tab.apply()
+            self.assertTrue(pump(app, lambda: "Identical" in tab.identical_label.cget("text"), 10))
+            self.assertTrue(tab.result_shown)
+        finally:
+            app.destroy()
 
 
 if __name__ == "__main__":

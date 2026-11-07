@@ -9,15 +9,10 @@ from collections import defaultdict
 
 from matplotlib.figure import Figure
 
-# what the methods are called on screen
-METHOD_LABELS = {
-    "seq": "Sequential",
-    "omp_rows": "Rows",
-    "omp_tiled": "Tiles",
-    "seq_sep": "Separable (1 thread)",
-    "omp_sep": "Separable",
-    "omp_sep_fused": "Separable fused",
-}
+from .engine import METHODS
+
+# what the methods are called on screen, e.g. "omp_tiled" -> "Tiled"
+METHOD_LABELS = {code: name for code, name, _ in METHODS}
 STRATEGY_LABELS = {"per_row": "Threads share each image", "per_image": "One image per thread"}
 
 
