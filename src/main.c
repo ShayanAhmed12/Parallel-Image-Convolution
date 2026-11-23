@@ -1,18 +1,7 @@
 /*
  * main.c -- reads the command line and runs one command.
  *
- *   pdc_conv gen    --size N|WxH --out img.ppm
- *   pdc_conv filter [--in img.ppm | --size N|WxH] --kernel blur|sharpen|sobel
- *                   [--variant METHOD] [--threads P] [--out out.ppm]
- *                   [--verify] [--csv f.csv] [--threadmap map.ppm]
- *   pdc_conv bench  [--size N|WxH] [--kernel all|blur|sharpen|sobel] [--methods m1,m2]
- *                   [--threads 1,2,4,8] [--reps 3] [--csv results_bench.csv]
- *   pdc_conv batch  [--n 2000] [--bsize 1024] [--kernel blur]
- *                   [--threads 1,2,4,8] [--reps 2] [--csv results_batch.csv]
- *   --blur-size N (odd, 3..25, default 5) works with filter, bench and batch
- *   --schedule static|dynamic|guided (omp_rows only, default static): filter, bench
- *   tuning:         --tile HxW (default 16x2048)   --fuse-bh R (default 16)
- *
+ * The commands and their options are listed in usage() below.
  * No parallel work happens here; see parallel.c and bench.c.
  */
 #include <omp.h>
@@ -26,7 +15,7 @@ static void usage(void) {
     puts("pdc_conv -- parallel image convolution (OpenMP)\n\n"
          "  pdc_conv gen    --size N|WxH --out img.ppm\n"
          "  pdc_conv filter [--in img.ppm | --size N|WxH] --kernel blur|sharpen|sobel\n"
-         "                  [--variant seq|omp_rows|omp_tiled|seq_sep|omp_sep|omp_sep_fused]\n"
+         "                  [--variant seq|omp_rows|omp_tiled|seq_sep|omp_sep]\n"
          "                  [--threads P] [--out out.ppm]\n"
          "                  [--verify] [--csv filter.csv] [--threadmap map.ppm]\n"
          "  pdc_conv bench  [--size N|WxH] [--kernel all|blur|sharpen|sobel] [--methods m1,m2]\n"
@@ -37,7 +26,7 @@ static void usage(void) {
          "  --schedule S    static|dynamic|guided, loop schedule of omp_rows (default static)\n"
          "  --verify        filter: also run seq, report speedup and whether output is identical\n"
          "  --threadmap F   filter: write an image showing which thread computed each pixel\n"
-         "  tuning:         --tile HxW (omp_tiled, default 16x2048)  --fuse-bh R (default 16)");
+         "  --tile HxW      tile size of omp_tiled (default 16x2048)");
 }
 
 /* "1,2,4,8" -> {1,2,4,8}; returns how many numbers were read */
@@ -230,10 +219,6 @@ int main(int argc, char **argv) {
             if (sscanf(value, "%dx%d", &opt.tile_h, &opt.tile_w) != 2 || opt.tile_h < 1 || opt.tile_w < 1)
                 die("bad --tile %s (use HxW)", value);
         }
-        else if (!strcmp(arg, "--fuse-bh")) {
-            opt.fuse_rows = atoi(value);
-            if (opt.fuse_rows < 1) die("bad --fuse-bh %s", value);
-        }
         else { fprintf(stderr, "unknown option: %s\n", arg); usage(); return 1; }
     }
     if (n_threads == 0) n_threads = default_thread_list(threads);
@@ -269,10 +254,7 @@ int main(int argc, char **argv) {
         memcpy(b.threads, threads, sizeof threads);
         b.n_threads = n_threads;
         b.reps = reps > 0 ? reps : 3;
-        b.tile_h = opt.tile_h;
-        b.tile_w = opt.tile_w;
-        b.fuse_rows = opt.fuse_rows;
-        b.schedule = opt.schedule;
+        b.run = opt;
         b.csv = csv ? csv : "results_bench.csv";
         return run_bench(&b);
     }

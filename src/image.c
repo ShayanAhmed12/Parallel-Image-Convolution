@@ -119,10 +119,6 @@ void image_free(Image *img) {
     img->pixels = NULL;
 }
 
-static inline uint8_t clamp_to_byte(int v) {
-    return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
-}
-
 /* Small integer hash, used to add repeatable "noise" to the test image. */
 static inline uint32_t hash32(uint32_t x) {
     x ^= x >> 16; x *= 0x7feb352dU;

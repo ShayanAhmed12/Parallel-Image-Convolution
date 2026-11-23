@@ -22,14 +22,6 @@
 
 #include "pdc.h"
 
-static inline int clamp_int(int v, int lo, int hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
-static inline uint8_t clamp_to_byte(int v) {
-    return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
-}
-
 /* ------------------------------------------------------------------ */
 /* filter settings                                                     */
 /* ------------------------------------------------------------------ */
@@ -58,22 +50,15 @@ Filter filter_make(FilterKind kind, int blur_size) {
     return f;
 }
 
-const char *filter_name(FilterKind kind) {
-    switch (kind) {
-    case FILTER_BLUR:    return "blur";
-    case FILTER_SHARPEN: return "sharpen";
-    case FILTER_SOBEL:   return "sobel";
-    }
-    return "?";
-}
+static const char *const FILTER_NAMES[] = { "blur", "sharpen", "sobel" };
+
+const char *filter_name(FilterKind kind) { return FILTER_NAMES[kind]; }
 
 int filter_from_name(const char *name, FilterKind *out) {
-    if (!strcmp(name, "blur"))    { *out = FILTER_BLUR;    return 1; }
-    if (!strcmp(name, "sharpen")) { *out = FILTER_SHARPEN; return 1; }
-    if (!strcmp(name, "sobel"))   { *out = FILTER_SOBEL;   return 1; }
+    for (int k = 0; k < 3; k++)
+        if (!strcmp(name, FILTER_NAMES[k])) { *out = (FilterKind)k; return 1; }
     return 0;
 }
-
 
 /* ------------------------------------------------------------------ */
 /* one output pixel                                                    */
@@ -133,9 +118,9 @@ static inline void sobel_pixel(const uint8_t *p, ptrdiff_t stride, uint8_t *o) {
 static void gather_window(const Image *in, int x, int y, int radius, uint8_t *window) {
     int n = 2 * radius + 1;
     for (int j = 0; j < n; j++) {
-        int yy = clamp_int(y - radius + j, 0, in->height - 1);
+        int yy = clamp(y - radius + j, 0, in->height - 1);
         for (int i = 0; i < n; i++) {
-            int xx = clamp_int(x - radius + i, 0, in->width - 1);
+            int xx = clamp(x - radius + i, 0, in->width - 1);
             const uint8_t *src = in->pixels + ((size_t)yy * in->width + xx) * 3;
             uint8_t *dst = window + (j * n + i) * 3;
             dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
@@ -150,8 +135,8 @@ static void interior_columns(int y, int r, int W, int H, int x0, int x1, int *xa
         *xa = *xb = x1;
         return;
     }
-    *xa = clamp_int(r, x0, x1);
-    *xb = clamp_int(W - r, *xa, x1);
+    *xa = clamp(r, x0, x1);
+    *xb = clamp(W - r, *xa, x1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -297,7 +282,7 @@ static void horizontal_border_pixel(const uint8_t *src_row, uint32_t *dst_row, i
                                     int r, int size, const uint32_t *w) {
     for (int c = 0; c < 3; c++) {
         uint32_t sum = 0;
-        for (int i = 0; i < size; i++) sum += w[i] * src_row[clamp_int(x - r + i, 0, width - 1) * 3 + c];
+        for (int i = 0; i < size; i++) sum += w[i] * src_row[clamp(x - r + i, 0, width - 1) * 3 + c];
         dst_row[x * 3 + c] = sum;
     }
 }

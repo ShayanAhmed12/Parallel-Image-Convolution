@@ -1,14 +1,12 @@
 /*
  * pdc.h -- everything the program's files share: types and function declarations.
  *
- * Parallel Image Convolution / Filtering (OpenMP)
- * PDC course project, FAST-NUCES Karachi, Fall 2026
- * Shayan Ahmed (23K-0551), Rizwan Vadsariya (23K-0005), Aaqib (23K-0625)
+ * Parallel Image Convolution / Filtering (OpenMP), PDC course project.
  *
  * How the files fit together:
  *   image.c     memory, timing, reading/writing images, the generated test image
  *   filters.c   the maths of blur / sharpen / sobel for a rectangle of pixels
- *   parallel.c  the six ways of running a filter: sequential and OpenMP versions
+ *   parallel.c  the five ways of running a filter: sequential and OpenMP versions
  *   bench.c     the "bench" and "batch" commands: timing and verification
  *   main.c      reads the command line and runs the chosen command
  */
@@ -17,6 +15,12 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+/* v limited to the range lo..hi (used for coordinates at the image border) */
+static inline int clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+/* v limited to 0..255, the range of one colour byte */
+static inline uint8_t clamp_to_byte(int v) { return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v)); }
 
 /* ------------------------------------------------------------------ */
 /* image.c -- helpers                                                  */
@@ -103,7 +107,6 @@ typedef enum {
     METHOD_TILED,      /* "omp_tiled"     OpenMP over rectangular tiles           */
     METHOD_SEP_SEQ,    /* "seq_sep"       separable blur, sequential   (blur only) */
     METHOD_SEP,        /* "omp_sep"       separable blur, two parallel passes      */
-    METHOD_SEP_FUSED,  /* "omp_sep_fused" separable blur, passes fused per block   */
     METHOD_COUNT
 } Method;
 
@@ -114,12 +117,11 @@ typedef struct {
     int threads;              /* number of OpenMP threads (parallel methods only) */
     Schedule schedule;        /* loop schedule for METHOD_ROWS */
     int tile_h, tile_w;       /* tile size for METHOD_TILED */
-    int fuse_rows;            /* rows per block for METHOD_SEP_FUSED */
     uint8_t *owner;           /* NULL, or width*height bytes: which thread wrote each pixel */
     uint32_t *scratch;        /* width*height*3 sums, needed by METHOD_SEP_SEQ and METHOD_SEP */
 } RunOptions;
 
-RunOptions  run_options_default(void);   /* 1 thread, static, 16x2048 tiles, 16 fused rows */
+RunOptions  run_options_default(void);   /* 1 thread, static schedule, 16x2048 tiles */
 void        run_method(Method m, const Filter *f, const Image *in, Image *out, const RunOptions *opt);
 const char *method_name(Method m);
 int         method_from_name(const char *name, Method *out);   /* 1 = ok, 0 = unknown */
@@ -145,8 +147,7 @@ typedef struct {
     int blur_size;
     int threads[MAX_THREAD_COUNTS], n_threads;
     int reps;                            /* best of this many runs */
-    Schedule schedule;                   /* for omp_rows */
-    int tile_h, tile_w, fuse_rows;
+    RunOptions run;                      /* schedule for omp_rows and tile size for omp_tiled */
     const char *csv;
 } BenchOptions;
 
