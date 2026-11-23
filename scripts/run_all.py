@@ -112,7 +112,7 @@ def main():
     ])
     print("3. Blur size sweep", flush=True)
     bench_runs("blur_sizes", [
-        ("--size", s["sweep"], "--kernel", "blur", "--blur-size", n, "--methods", "omp_rows,omp_tiled,omp_sep_fused",
+        ("--size", s["sweep"], "--kernel", "blur", "--blur-size", n, "--methods", "omp_rows,omp_tiled",
          "--threads", s["sweep_threads"], "--reps", s["sweep_reps"])
         for n in (3, 5, 9, 15, 21, 25)
     ])
