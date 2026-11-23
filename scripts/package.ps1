@@ -4,7 +4,7 @@
 #                                pdc_conv.exe, src\, results\, demo\, README, REPORT, VIVA_GUIDE
 #   dist\PDC-Convolution.zip     the same folder, zipped
 #
-# Needs: Python with the packages in requirements.txt (including pyinstaller),
+# Needs: Python 3 (the packages in requirements.txt are installed into build\venv),
 # and the compiler at C:\mingw64 for scripts\build.ps1.
 
 $ErrorActionPreference = 'Stop'
@@ -13,9 +13,17 @@ Set-Location $project
 
 & (Join-Path $PSScriptRoot 'build.ps1')
 
+# A private Python environment with only requirements.txt in it, so PyInstaller
+# cannot pull in other packages that happen to be installed on this PC.
+$venv = Join-Path $project 'build\venv'
+if (-not (Test-Path (Join-Path $venv 'Scripts\python.exe'))) { python -m venv $venv }
+$python = Join-Path $venv 'Scripts\python.exe'
+& $python -m pip install --quiet --disable-pip-version-check -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw 'pip install failed.' }
+
 # the app: one folder with its own Python inside; --windowed = no console window.
 # --paths . lets PyInstaller find the "gui" package that app.pyw imports.
-python -m PyInstaller --noconfirm --windowed --name PDC-Convolution `
+& $python -m PyInstaller --noconfirm --windowed --name PDC-Convolution `
     --distpath dist --workpath build\pyinstaller --specpath build --paths . gui\app.pyw
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
 
