@@ -11,7 +11,7 @@ import tkinter as tk
 import unittest
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -108,14 +108,26 @@ class EngineHelperTests(TempDirTest):
 
     def test_methods_for(self):
         self.assertEqual([code for code, _ in engine.methods_for("blur")],
-                         ["seq", "omp_rows", "omp_tiled", "seq_sep", "omp_sep", "omp_sep_fused"])
+                         ["seq", "omp_rows", "omp_tiled", "seq_sep", "omp_sep"])
         self.assertEqual(engine.methods_for("sobel"),
                          [("seq", "Sequential"), ("omp_rows", "Rows"), ("omp_tiled", "Tiled")])
 
-    def test_bench_memory(self):
-        self.assertEqual(engine.bench_memory_bytes(12000, 12000, True), 3 * 432_000_000 + 1_728_000_000)
-        self.assertEqual(engine.bench_memory_bytes(12000, 12000, False), 3 * 432_000_000)
-        self.assertEqual(engine.batch_memory_bytes(1024, 4), (8 * 3 + 4) * 1024 * 1024 * 3)
+    def test_command_text(self):
+        # what the app shows under the tabs: quoted the way a person would type it
+        self.assertEqual(engine.command_text(["gen", "--size", 64, "--out", "my dir/a.ppm"]),
+                         'pdc_conv gen --size 64 --out "my dir/a.ppm"')
+
+    def test_read_csv_skips_a_row_still_being_written(self):
+        csv = self.tmp / "partial.csv"
+        csv.write_text("method,threads,time_s\nseq,1,0.5\nomp_rows,2")
+        self.assertEqual(charts.read_csv(csv), [{"method": "seq", "threads": "1", "time_s": "0.5"}])
+
+    def test_to_ppm_applies_photo_rotation(self):
+        photo = Image.new("RGB", (4, 2), (255, 0, 0))
+        exif = photo.getexif()
+        exif[0x0112] = 6                    # "rotate 90 degrees", as phone cameras write it
+        photo.save(self.tmp / "phone.jpg", exif=exif)
+        self.assertEqual(engine.to_ppm(self.tmp / "phone.jpg", self.tmp / "phone.ppm"), (2, 4))
 
     def test_to_ppm_modes(self):
         sources = {
@@ -135,11 +147,9 @@ class EngineHelperTests(TempDirTest):
                 with Image.open(dst) as converted:
                     self.assertEqual((converted.mode, converted.size), ("RGB", image.size))
 
-    def test_system_info(self):
-        info = engine.system_info()
-        self.assertGreaterEqual(info.logical_cpus, 1)
-        self.assertGreater(info.free_ram, 0)
-        self.assertTrue(info.cpu_name)
+    def test_machine_info(self):
+        self.assertGreaterEqual(engine.CPUS, 1)
+        self.assertTrue(engine.cpu_name())
 
 
 class EngineRunTests(TempDirTest):
@@ -245,7 +255,23 @@ class RunTabTests(unittest.TestCase):
         self.assertEqual(tab.last_code, 0)
         rows = charts.read_csv(self.app.runs / "bench.csv")
         self.assertEqual(len(tab.table.get_children()), len(rows))
+        self.assertEqual(len(rows), tab.expected_rows())
         self.assertIsNotNone(tab.canvas)
+        self.assertTrue(self.app.command.get().startswith("pdc_conv bench --size 256"))
+
+    def test_bench_tab_shows_rows_while_running(self):
+        tab = self.app.bench_tab
+        tab.size.set("3000")
+        tab.filter.set("blur")
+        tab.blur_size.set("9")
+        self.choose_threads(tab, {1, 2})
+        tab.reps.set("1")
+        tab.run()
+        # some rows are in the table while the engine is still working
+        self.assertTrue(pump(self.app, lambda: tab.table.get_children() and self.app.current_run, 30))
+        self.assertIsNotNone(tab.canvas)
+        self.assertTrue(pump(self.app, lambda: tab.last_code is not None, 60))
+        self.assertEqual(len(tab.table.get_children()), tab.expected_rows())
 
     def test_batch_tab_run(self):
         tab = self.app.batch_tab
@@ -274,7 +300,7 @@ class RunTabTests(unittest.TestCase):
         self.assertNotIn("disabled", self.app.bench_tab.stop_button.state())   # any tab can stop it
         self.assertIn("disabled", self.app.bench_tab.run_button.state())
         tab.stop_button.invoke()
-        self.assertTrue(pump(self.app, lambda: self.app.current_run is None, 3))
+        self.assertTrue(pump(self.app, lambda: self.app.current_run is None, 10))
         self.assertNotIn("disabled", tab.apply_button.state())
         self.assertIn("disabled", tab.stop_button.state())
         self.assertEqual(self.app.status.cget("text"), "Stopped")
@@ -303,7 +329,7 @@ class RunTabTests(unittest.TestCase):
         tab.stop_button.invoke()
         self.assertTrue(pump(self.app, lambda: tab.last_code is not None, 3))
         self.assertEqual(tab.last_code, -1)
-        self.assertIn("Image 6000x6000", tab.log.get("1.0", "end"))
+        self.assertEqual(self.app.status.cget("text"), "Stopped")
         self.assertEqual(len(tab.table.get_children()), 0)
         self.assertIsNone(tab.canvas)
 

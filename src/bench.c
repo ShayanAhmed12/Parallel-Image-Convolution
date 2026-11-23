@@ -94,8 +94,9 @@ int run_bench(const BenchOptions *o) {
 
         /* the reference: sequential output and time T1 */
         double t1 = best_time(METHOD_SEQ, &f, &in, &reference, &opt, o->reps);
-        printf("%-14s %4d %10.4f %9.2f %7.2f  reference (T1)\n", "seq", 1, t1, 1.0, 1.0);
         fprintf(csv, "%s,%s,seq,,1,%.6f,1.000,1.000,1.000,ref\n", filter_name(f.kind), size_text, t1);
+        fflush(csv);
+        printf("%-14s %4d %10.4f %9.2f %7.2f  reference (T1)\n", "seq", 1, t1, 1.0, 1.0);
 
         for (int m = METHOD_SEQ + 1; m < METHOD_COUNT; m++) {
             if (!(o->methods & (1u << m))) continue;
@@ -114,12 +115,13 @@ int run_bench(const BenchOptions *o) {
                 char self_speedup[32] = "";
                 if (own_one_thread_time > 0)
                     snprintf(self_speedup, sizeof self_speedup, "%.3f", own_one_thread_time / t);
-                printf("%-14s %4d %10.4f %9.2f %7.2f  %s\n", method_name((Method)m), opt.threads, t,
-                       speedup, efficiency, differences ? "MISMATCH" : "ok");
+                /* the CSV row first and flushed, so the app can show it as soon as the line appears */
                 fprintf(csv, "%s,%s,%s,%s,%d,%.6f,%.3f,%.3f,%s,%s\n", filter_name(f.kind), size_text,
                         method_name((Method)m), m == METHOD_ROWS ? schedule_name(opt.schedule) : "",
                         opt.threads, t, speedup, efficiency, self_speedup, differences ? "FAIL" : "ok");
-                fflush(stdout);
+                fflush(csv);
+                printf("%-14s %4d %10.4f %9.2f %7.2f  %s\n", method_name((Method)m), opt.threads, t,
+                       speedup, efficiency, differences ? "MISMATCH" : "ok");
             }
         }
     }
@@ -199,9 +201,10 @@ int run_batch(const BatchOptions *o) {
         double t = wtime() - t0;
         if (t < t1) t1 = t;
     }
+    fprintf(csv, "seq,%s,%s,1,%.6f,1.000,1.000,%.2f,ref\n", filter_name(f.kind), size_text, t1, N / t1);
+    fflush(csv);   /* each row is flushed before its line is printed, so the app can show it at once */
     printf("\n%-10s %4s %10s %9s %7s %10s\n", "strategy", "thr", "time(s)", "speedup", "eff", "img/s");
     printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "seq", 1, t1, 1.0, 1.0, N / t1);
-    fprintf(csv, "seq,%s,%s,1,%.6f,1.000,1.000,%.2f,ref\n", filter_name(f.kind), size_text, t1, N / t1);
 
     for (int i = 0; i < o->n_threads; i++) {
         const int p = o->threads[i];
@@ -240,15 +243,15 @@ int run_batch(const BatchOptions *o) {
         for (int t = 0; t < p; t++) image_free(&outputs[t]);
         xfree(outputs);
 
-        printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "per_row", p, t_rows, t1 / t_rows,
-               t1 / t_rows / p, N / t_rows);
-        printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "per_image", p, t_images, t1 / t_images,
-               t1 / t_images / p, N / t_images);
         fprintf(csv, "per_row,%s,%s,%d,%.6f,%.3f,%.3f,%.2f,%s\n", filter_name(f.kind), size_text, p, t_rows,
                 t1 / t_rows, t1 / t_rows / p, N / t_rows, ok ? "ok" : "FAIL");
         fprintf(csv, "per_image,%s,%s,%d,%.6f,%.3f,%.3f,%.2f,%s\n", filter_name(f.kind), size_text, p,
                 t_images, t1 / t_images, t1 / t_images / p, N / t_images, ok ? "ok" : "FAIL");
-        fflush(stdout);
+        fflush(csv);
+        printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "per_row", p, t_rows, t1 / t_rows,
+               t1 / t_rows / p, N / t_rows);
+        printf("%-10s %4d %10.3f %9.2f %7.2f %10.1f\n", "per_image", p, t_images, t1 / t_images,
+               t1 / t_images / p, N / t_images);
     }
     fclose(csv);
     printf("\nresults written to %s\n", o->csv);

@@ -1,23 +1,19 @@
-"""Everything the app needs to talk to pdc_conv.exe and to the machine.
+"""Everything the app needs to talk to pdc_conv.exe.
 
 The app never filters or times anything itself: it runs the C program with
 ordinary command-line options (EngineRun) and reads the CSV and image files
-it writes. This module also holds the method names and help texts, the
-memory estimates for the RAM warning, and the machine details shown in the
-status bar.
+it writes. This module also holds the method names and help texts shown in
+the app.
 """
-import ctypes
 import os
 import queue
 import subprocess
 import sys
 import tempfile
 import threading
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -28,8 +24,8 @@ METHODS = [
     ("omp_tiled", "Tiled", False),
     ("seq_sep", "Separable (sequential)", True),
     ("omp_sep", "Separable", True),
-    ("omp_sep_fused", "Separable, fused", True),
 ]
+METHOD_NAMES = {code: name for code, name, _ in METHODS}
 
 METHOD_HELP = {
     "seq": "One thread filters the whole image, pixel by pixel. "
@@ -44,11 +40,8 @@ METHOD_HELP = {
     "seq_sep": "A blur can be done as two 1-D passes: first along each row, then down each column. "
                "That needs 2N instead of N x N multiplications per pixel. One thread, for comparison.",
     "omp_sep": "The two separable passes, each split between threads by rows. The second pass must "
-               "wait for the first to finish completely (an implicit barrier), and the full-size "
-               "intermediate image goes through main memory.",
-    "omp_sep_fused": "Each thread takes a block of rows and does both passes on it, using a small "
-                     "private buffer, so no barrier is needed and, if the image is not too wide, the "
-                     "buffer stays in the cache. A few rows at the block edges are computed twice.",
+               "wait for the first to finish completely (an implicit barrier), because each output "
+               "row needs rows of sums that other threads produced.",
 }
 
 BLUR_SIZES = [3, 5, 7, 9, 11, 15, 21, 25]
@@ -58,21 +51,18 @@ SCHEDULES = ["static", "dynamic", "guided"]
 THREAD_COLORS = [(31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 103, 189),
                  (140, 86, 75), (227, 119, 194), (127, 127, 127), (188, 189, 34), (23, 190, 207)]
 
+CPUS = os.cpu_count() or 1
+
 
 def methods_for(filter_name):
     """The methods that can run a filter, as (code, friendly name)."""
     return [(code, name) for code, name, blur_only in METHODS if filter_name == "blur" or not blur_only]
 
 
-def thread_choices(logical_cpus):
+def thread_choices(logical_cpus=CPUS):
     """1, 2, 4, 8, ... up to the number of logical CPUs, which is always included."""
-    choices = []
-    t = 1
-    while t < logical_cpus:
-        choices.append(t)
-        t *= 2
-    choices.append(logical_cpus)
-    return choices
+    choices = [t for t in (1, 2, 4, 8, 16, 32, 64) if t < logical_cpus]
+    return choices + [logical_cpus]
 
 
 def default_threads(choices):
@@ -80,56 +70,25 @@ def default_threads(choices):
     return max(t for t in choices if t <= 8)
 
 
-def bench_memory_bytes(width, height, blur_separable):
-    """Memory a bench run needs: input, reference and output images (+ the separable sums)."""
-    image = width * height * 3
-    return 3 * image + (image * 4 if blur_separable else 0)
-
-
-def batch_memory_bytes(size, threads):
-    """Memory a batch run needs: 8 inputs, 8 references, 8 checks, plus one output per thread."""
-    return (8 * 3 + threads) * size * size * 3
+def cpu_name():
+    """The processor's name as Windows shows it, e.g. "Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz"."""
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+        return winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
+    except OSError:
+        return "unknown CPU"
 
 
 def to_ppm(src, dst):
     """Convert any image Pillow can open into the 8-bit RGB PPM the engine reads."""
     with Image.open(src) as image:
+        image = ImageOps.exif_transpose(image)          # phone photos: apply their rotation
         if image.mode in ("I;16", "I;16B", "I;16L", "I"):
-            # 16-bit or 32-bit greyscale: scale down to 0..255 first
-            image = image.point(lambda v: v / 256).convert("L")
+            image = image.point(lambda v: v / 256).convert("L")   # 16/32-bit grey -> 0..255
         image = image.convert("RGB")
         image.save(dst, format="PPM")
         return image.size
-
-
-@dataclass
-class SystemInfo:
-    cpu_name: str
-    logical_cpus: int
-    free_ram: int        # bytes
-
-
-class _MemoryStatus(ctypes.Structure):
-    _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-
-
-def system_info():
-    """CPU name, logical CPU count and free RAM of this machine (read every time)."""
-    cpu_name = "unknown CPU"
-    try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
-        cpu_name = winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
-    except OSError:
-        pass
-    status = _MemoryStatus()
-    status.dwLength = ctypes.sizeof(status)
-    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-    return SystemInfo(cpu_name, os.cpu_count() or 1, status.ullAvailPhys)
 
 
 def engine_path():
@@ -141,10 +100,14 @@ def engine_path():
 
 def runs_dir():
     """Where the app's runs write their images and CSVs."""
-    base = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()))
-    folder = base / "PDC-Convolution" / "runs"
+    folder = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "PDC-Convolution" / "runs"
     folder.mkdir(parents=True, exist_ok=True)
     return folder
+
+
+def command_text(args):
+    """The command line as a person would type it, for showing in the app."""
+    return subprocess.list2cmdline(["pdc_conv", *map(str, args)])
 
 
 class EngineRun:
@@ -157,8 +120,7 @@ class EngineRun:
     spaces or brackets need no quoting.
     """
 
-    def __init__(self, args: list[str], on_line: Callable[[str], None],
-                 on_done: Callable[[int, str], None], tk_root):
+    def __init__(self, args, on_line, on_done, tk_root):
         self.on_line, self.on_done, self.tk_root = on_line, on_done, tk_root
         self.stopped = False
         self.running = True
@@ -178,8 +140,7 @@ class EngineRun:
                     self.on_line(message[1])
                 else:
                     self.running = False
-                    code = -1 if self.stopped else message[1]
-                    self.on_done(code, message[2])
+                    self.on_done(-1 if self.stopped else message[1], message[2])
                     return
         except queue.Empty:
             pass
