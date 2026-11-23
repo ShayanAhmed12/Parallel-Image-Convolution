@@ -1,7 +1,7 @@
 # Build the folder and zip that go to the demo laptop.
 #
 #   dist\PDC-Convolution\        PDC-Convolution.exe (the app, no Python needed),
-#                                pdc_conv.exe, src\, results\, demo\, README, REPORT, VIVA_GUIDE
+#                                pdc_conv.exe, src\, results\, demo\, and the documents
 #   dist\PDC-Convolution.zip     the same folder, zipped
 #
 # Needs: Python 3 (the packages in requirements.txt are installed into build\venv),
@@ -34,7 +34,7 @@ foreach ($folder in 'src', 'results', 'demo') {
     if (Test-Path $target) { Remove-Item $target -Recurse -Force }
     Copy-Item $folder $target -Recurse
 }
-foreach ($file in 'README.md', 'REPORT.md', 'VIVA_GUIDE.md') {
+foreach ($file in 'README.md', 'HOW_TO_RUN.md', 'REPORT.md', 'VIVA_GUIDE.md') {
     if (Test-Path $file) { Copy-Item $file $out -Force }
     else { Write-Warning "$file not found; it is not in the package." }
 }

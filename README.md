@@ -4,8 +4,12 @@ Blur (any odd size 3 to 25), sharpen and Sobel edge detection on 24-bit RGB imag
 written sequentially first and then parallelised with OpenMP in five ways. Every
 parallel method produces exactly the same bytes as the sequential one; `bench` and
 `batch` check that at every thread count, and the app checks it on every Apply.
-The written report is [REPORT.md](REPORT.md);
-the study guide for the viva is [VIVA_GUIDE.md](VIVA_GUIDE.md).
+
+Documents:
+
+- [HOW_TO_RUN.md](HOW_TO_RUN.md): running the app and the project, step by step
+- [REPORT.md](REPORT.md): the written report
+- [VIVA_GUIDE.md](VIVA_GUIDE.md): everything the team needs for the viva
 
 ## Run the app (demo laptop, nothing to install)
 

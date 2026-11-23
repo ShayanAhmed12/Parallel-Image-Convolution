@@ -1,325 +1,562 @@
 # Viva guide
 
-A study guide for all three of us. Read it top to bottom once, then use the
-questions at the end to test each other. Numbers come from [REPORT.md](REPORT.md).
+Everything a team member needs to explain this project and answer questions about
+it. Read it once from top to bottom, then use the questions in section 10 to test
+each other. All numbers come from [REPORT.md](REPORT.md) (the final run on the
+i7-3770 PC). How to run things is in [HOW_TO_RUN.md](HOW_TO_RUN.md).
+
+**Contents**
+
+1. The project in one minute
+2. Background, in plain words
+3. The three filters
+4. The five methods (the OpenMP part: know this best)
+5. Every OpenMP construct we use
+6. Measuring fairly
+7. Checking that the output is correct
+8. The code, file by file
+9. The results and what they mean
+10. Questions you may be asked, with answers
+11. Numbers to remember
+12. The demo
+13. Before the viva
+
+---
 
 ## 1. The project in one minute
 
-Convolution: every output pixel is a weighted sum of the input pixels in a small
-window around it (3x3 for sharpen and Sobel, N x N for blur). Output pixels never
-depend on each other, so the image can be split between threads in any way and the
-result is the same. That makes it a clean **data-parallel** problem.
+**What it does.** It applies three image filters (blur, sharpen, Sobel edge
+detection) to large colour images, first with one thread and then with OpenMP on
+all the cores of the CPU, and measures how much faster the parallel versions are.
 
-We wrote it sequentially first (`seq`), which is both the **correctness reference**
-and the time **T1**. Then five parallel or faster versions, each a different way to
-split the work or use the cache. For every run the program compares the output of
-each method with the sequential output **byte by byte**, and reports
-speedup = T1 / Tp and efficiency = speedup / p.
+**Say it like this (30 seconds):**
 
-Everything uses whole-number arithmetic, so the outputs are exactly equal, not
-"close". If a single byte differs, the program says MISMATCH and exits with code 2.
+> "Convolution means every output pixel is a weighted sum of the input pixels
+> around it. No output pixel depends on another output pixel, so we can give
+> different parts of the image to different threads and the answer does not
+> change. We wrote a sequential version first. It is our reference for correct
+> output and our baseline time. Then we parallelised it with OpenMP in several
+> ways (by rows, by tiles, a faster two-pass blur, and whole images per thread)
+> and compared them. Every parallel output is checked byte by
+> byte against the sequential one. On a 4-core, 8-thread CPU we get about 3x with
+> 4 threads and 4.3x with 8 for the blur."
 
-## 2. The files
+**The key words:**
 
-The C program is `pdc_conv.exe`. The app (Python) only runs it and shows what it
-writes; it never filters or times anything.
+- **T1**: time of the sequential program (one thread).
+- **Tp**: time with p threads.
+- **Speedup** = T1 / Tp. 4 threads and 4x faster = perfect.
+- **Efficiency** = speedup / p. 1.0 = every thread fully used.
 
-### src/pdc.h
-The one header: every type and function the `.c` files share, grouped by file.
-`Image` (width, height, pixels as R,G,B bytes row by row), `Filter` (kind, window
-size, radius, blur weights, shift), `Method`, `Schedule`, `RunOptions`,
-`BenchOptions`, `BatchOptions`.
+**Sizes from the proposal:** one 12000 x 12000 image (432 MB) and a batch of 3000
+images of 1024 x 1024.
 
-### src/image.c: memory, timer, images
-- `die`: prints `error: ...` and exits with code 1.
-- `xalloc` / `xfree`: memory aligned to 64 bytes (one cache line), so no buffer
-  starts in the middle of a cache line. Dies with "out of memory" if it fails.
-- `first_touch`: writes a buffer once, in parallel (`omp parallel for`), before any
-  timing. Windows only really gives a page of memory the first time it is written;
-  doing that early keeps page faults out of the timed region.
-- `wtime` / `wtick`: the timer. On Windows it reads `QueryPerformanceCounter`
-  (100 ns resolution). MinGW's `omp_get_wtime` only ticks every 1 ms, which is too
-  coarse for runs of 0.01 to 0.1 s.
-- `image_new`, `image_free`: allocate (and first-touch) / free an image.
-- `image_make_test`: the generated test image (colour gradients, a circle, a white
-  square, stripes, a little noise), filled in parallel. Same seed = same image.
-- `image_count_differences`: compares two images; `reduction(+ : differences)` adds
-  up each thread's count at the end.
-- `image_read_ppm`, `image_write_ppm`: binary PPM (P6) files, the simplest RGB format.
+## 2. Background, in plain words
 
-### src/filters.c: the maths, no parallelism
-- `filter_make`: builds a filter. Blur weights are row N-1 of Pascal's triangle
-  (5x5: 1 4 6 4 1), which approximates a Gaussian. One row sums to 2^(N-1), the
-  whole window to 2^(2(N-1)), so dividing by the total is a right shift by
-  `shift = 2(N-1)`. Rounding: add half (2^(shift-1)) before shifting.
-  Sizes must be odd, 3 to 25.
-- `blur_pixel`, `sharpen_pixel`, `sobel_pixel`: one output pixel from a window.
-  Sharpen is `5*centre - up - down - left - right`, clamped to 0..255. Sobel turns
-  pixels into brightness (`luma`), computes horizontal and vertical gradients gx,
-  gy and outputs |gx| + |gy| in grey.
-- `gather_window`: near the border part of the window is outside the image. It
-  copies the window into a small buffer with outside pixels replaced by the nearest
-  edge pixel ("clamp to edge"), so the same pixel functions work unchanged.
-- `interior_columns`: in one row, which columns have their whole window inside the
-  image (fast path) and which are border pixels (gathered window).
-- `blur_box`, `sharpen_box`, `sobel_box`: filter a rectangle of output pixels
-  (rows y0..y1, columns x0..x1). Each row: left border, interior, right border.
-  Settings are copied into local variables first, because writing through a byte
-  pointer would otherwise force the compiler to re-read them after every byte.
-- `weighted_row_sums`, `blur_interior`: the fast blur for interior pixels. It works
-  on 1024 bytes of a row at a time, loop order "each weight, then each byte", so the
-  inner loop runs over consecutive bytes and the compiler can use SIMD.
-- `filter_box`: the one entry point: "filter this rectangle", with a `switch` on
-  the filter kind. Every 2-D method is just `filter_box` on different rectangles.
-- `blur_row_horizontal`, `blur_row_vertical`: the two 1-D passes of the separable
-  blur. Horizontal: weighted sums along one row into 32-bit numbers. Vertical: for
-  one output row, weighted sum of N rows of those sums, then round and shift.
+**Core, thread, Hyper-Threading.** A core is one real processor inside the CPU. A
+thread is one stream of instructions. Our test CPU (Intel i7-3770) has **4 cores**,
+and with **Hyper-Threading** each core can run 2 threads, so Windows sees **8
+threads**. Two threads on one core share that core. The second thread only uses
+the moments when the first is waiting, mostly for memory. So 8 threads on 4 cores
+is never 8x.
 
-### src/parallel.c: the five methods (the OpenMP part, know this best)
-- `run_options_default`: 1 thread, static schedule, 16 x 2048 tiles.
-- `mark_owner`: only for the thread map. Writes `omp_get_thread_num()` into one byte
-  per pixel of the rectangle a thread just wrote. Does nothing in timed runs
-  (`owner` is NULL).
-- `run_sequential` (**seq**): `filter_box` on the whole image. One thread.
-- `run_rows` (**omp_rows**): `#pragma omp parallel for schedule(runtime)` over the
-  rows; each iteration filters one row. `runtime` means the schedule is chosen in
-  `run_method` by `omp_set_schedule`: static (default), dynamic (chunk 1) or guided.
-- `run_tiled` (**omp_tiled**): two loops over tiles (rows of tiles, columns of
-  tiles) with `#pragma omp parallel for collapse(2) schedule(static)`. collapse(2)
-  merges the two loops into one list of tiles that is split between threads.
-- `vertical_pass_row`: builds the list of the N rows of horizontal sums needed for
-  output row y (clamped at the top and bottom) and calls `blur_row_vertical`.
-- `run_separable_sequential` (**seq_sep**): horizontal pass over all rows into a
-  full-size buffer of sums, then the vertical pass. One thread. Shows the algorithm
-  gain alone: 2N multiplications per pixel instead of N x N.
-- `run_separable` (**omp_sep**): one `#pragma omp parallel` region with two
-  `#pragma omp for` loops: pass 1 then pass 2. The end of the first loop is an
-  **implicit barrier**: pass 2 needs rows of sums that other threads produced, so
-  nobody may start pass 2 until everyone has finished pass 1.
-- `run_method`: sets the thread count (`omp_set_num_threads`), sets the schedule for
-  Rows (`omp_set_schedule`), and calls the method with a `switch`.
-- `method_name`, `method_from_name`, `method_blur_only`, `method_is_parallel`,
-  `schedule_name`, `schedule_from_name`: names for the command line and CSVs.
-- `THREAD_COLORS`, `threadmap_write_ppm`: turn the owner bytes into a colour image
-  (thread 0 blue, 1 orange, 2 green, 3 red, ...).
+**OpenMP.** A standard way to make C code parallel by adding `#pragma omp ...`
+lines. The compiler (GCC with `-fopenmp`) turns them into code that starts threads
+and splits loops between them. Example:
 
-### src/bench.c: measuring
-- `warm_up_threads`: an empty `#pragma omp parallel` region so the thread team is
-  created before timing.
-- `best_time`: run a method several times, keep the fastest.
-- `run_bench`: sequential reference first (output + T1), then every method at every
-  thread count. Before each method the output is filled with junk (0xA5), so a
-  method that wrote nothing cannot pass. Each CSV row is written and flushed
-  (`fflush`) before the table line is printed, so the app can show it straight away.
-- `run_batch`: many small images. `per_row`: images one after another, each with
-  the Rows method (threads share each image). `per_image`: `#pragma omp parallel`
-  with `#pragma omp for schedule(dynamic, 1)` over the images, each thread filtering
-  whole images into its own output image (allocated before the timer).
+```c
+#pragma omp parallel for
+for (int y = 0; y < height; y++)
+    filter_row(y);
+```
 
-### src/main.c: the command line
-Reads the options (`parse_thread_list`, `parse_size`, `parse_blur_size`,
-`parse_filter_mask`, `parse_method_mask`) and runs `gen`, `filter`, `bench` or
-`batch`. `command_filter` runs one method once; with `--verify` it also runs `seq`
-and compares; with `--threadmap` it does a second, untimed run that records owners.
-stdout is unbuffered so the app sees each line as it is printed.
+Without the pragma, one thread does every row. With it, the rows are divided
+between the threads. The loop body is unchanged.
 
-### gui/ and scripts/
-- `gui/app.pyw`: the window (Filter, Benchmark, Batch tabs). Builds a `pdc_conv`
-  command line, runs it, shows the images, table and chart.
-- `gui/engine.py`: runs the exe in the background (`EngineRun`), method names and
-  help texts, the CPU name, the command line shown in the app, image conversion to PPM.
-- `gui/charts.py`: the graphs, shared by the app and the report.
-- `scripts/build.ps1` (compile), `run_all.py` (all experiments), `plot_results.py`
-  (graphs), `package.ps1` (the zip for the laptop).
-- `tests/`: automatic checks that every method matches `seq` on awkward sizes
-  (1x1, 2x3, 128x1, 257x131 ...), every blur size, every schedule, plus the app.
+**Data parallelism.** The same work on many independent pieces of data (here,
+pixels). This is the easiest kind of problem to parallelise.
 
-## 3. Every OpenMP construct we use, and why
+**Race condition.** Two threads use the same memory, at least one writes, and the
+result depends on who goes first. We have none: threads only **read** the input,
+and every output pixel is **written by exactly one thread**.
+
+**Barrier.** A point where every thread waits until all threads have arrived.
+Needed when the next step uses results from other threads. A barrier costs time,
+because the fast threads wait for the slowest.
+
+**Amdahl's law.** If a fraction f of the work cannot be parallelised, the best
+speedup with p threads is S(p) = 1 / (f + (1 - f) / p). Even 10 % serial work
+limits 8 threads to about 4.7x.
+
+**Memory-bound vs compute-bound.** A *compute-bound* job spends its time
+calculating, so more cores help. A *memory-bound* job spends its time waiting for
+data from RAM. All cores share the same RAM, so more threads do not help much.
+What decides it is **arithmetic per byte**: how much work is done for each byte
+read.
+
+**Cache.** Small, fast memory inside the CPU (here 256 KB L2 per core and 8 MB L3
+shared). Data that is used again soon should stay in the cache. A 12000 x 12000
+image is 432 MB, far too big for the cache, so it lives in RAM.
+
+## 3. The three filters
+
+Every output pixel is computed from a small **window** of input pixels around it,
+separately for red, green and blue.
+
+**Blur (N x N, N odd from 3 to 25; 5x5 is the main case).** A weighted average.
+The weights come from Pascal's triangle and look like a bell (Gaussian) curve. For
+5x5 each direction uses `1 4 6 4 1`. The 2-D weight is row weight x column weight.
+
+Worked example, 3x3 blur (weights `1 2 1`), one colour:
+
+```text
+window          weights         products
+10 10 10        1 2 1           10 20 10
+10 50 10   x    2 4 2     =     20 200 20      sum = 320
+10 10 10        1 2 1           10 20 10       weights add up to 16
+```
+
+320 / 16 = 20 (with rounding). The bright centre pixel is softened by its
+neighbours. Because the weights always add up to a power of two (16 = 2^4), the
+division is just a bit shift (`>> 4`), and everything stays a whole number.
+
+**Sharpen (3x3).** `5 x centre - up - down - left - right`, then limited to 0..255.
+Only 5 values per pixel, so very little arithmetic.
+
+**Sobel edge detection (3x3).** First turn each pixel into brightness:
+`(77 R + 150 G + 29 B) >> 8`. Then measure how fast brightness changes left to
+right (gx) and top to bottom (gy) with weights 1 2 1. Output `|gx| + |gy|` (max
+255) in grey: edges come out bright.
+
+**Borders.** Near the edge, part of the window is outside the image. We use
+**clamp to edge**: an outside pixel takes the value of the nearest edge pixel.
+
+**Why whole numbers only?** With floating point, adding in a different order can
+change the last digit. With integers, every method gives **exactly the same
+bytes**, so we can demand equality instead of "close enough".
+
+## 4. The five methods (the OpenMP part: know this best)
+
+All in `src/parallel.c`. Each method writes into a separate output image.
+
+### seq: the sequential reference
+
+One thread filters the whole image. Its output is the **reference** that every
+other method is compared with, and its time is **T1**.
+
+### omp_rows: split the rows
+
+```c
+#pragma omp parallel for schedule(runtime)
+for (int y = 0; y < in->height; y++)
+    filter_box(f, in, out, y, y + 1, 0, in->width);   /* one row */
+```
+
+Each loop iteration is one row. `schedule(runtime)` means the way rows are handed
+out is chosen when the program runs, with `omp_set_schedule`:
+
+- **static**: before the loop, the rows are cut into p equal blocks; thread 0 gets
+  the first block, thread 1 the next, and so on. No cost while running. Best when
+  every row costs the same (true here).
+- **dynamic, 1**: a thread that finishes takes the next single row. Balances uneven
+  work, but each hand-out costs a little.
+- **guided**: like dynamic, but starts with big pieces and ends with small ones.
+
+The thread map shows the difference: static gives p solid bands, dynamic gives thin
+interleaved stripes that change every run.
+
+### omp_tiled: split into tiles
+
+```c
+#pragma omp parallel for collapse(2) schedule(static)
+for (int ty = 0; ty < tiles_down; ty++)
+    for (int tx = 0; tx < tiles_across; tx++)
+        filter_box(f, in, out, y0, y1, x0, x1);        /* one tile */
+```
+
+The image is cut into tiles of 16 x 2048 pixels. **`collapse(2)`** joins the two
+loops into one list of tiles, which is then divided between the threads. Without
+it, only the outer loop (rows of tiles) would be divided, giving fewer pieces.
+Tiles keep the rows a thread reads close together, so they stay in the cache.
+
+### seq_sep: separable blur, one thread (blur only)
+
+The blur weights are row weight x column weight, so the blur can be done as **two
+1-D passes**: first sum along each row, then sum those down each column. That is
+**2N** multiplications per pixel instead of **N x N** (10 instead of 25 for 5x5,
+30 instead of 225 for 15x15). The row sums are kept in a full-size buffer of 32-bit
+numbers. This one is single-threaded, to show the gain from the better algorithm
+alone.
+
+### omp_sep: separable blur, parallel (blur only)
+
+```c
+#pragma omp parallel
+{
+    #pragma omp for schedule(static)
+    for (int y = 0; y < height; y++)  horizontal_pass(y);   /* pass 1 */
+    /* implicit barrier here */
+    #pragma omp for schedule(static)
+    for (int y = 0; y < height; y++)  vertical_pass(y);     /* pass 2 */
+}
+```
+
+One team of threads does both passes. Every `omp for` ends with an **implicit
+barrier**. Here it is **required**: output row y needs the row sums of rows
+y - r ... y + r, and some of those were made by other threads. So no thread may
+start pass 2 until everyone has finished pass 1.
+
+**We also tried a version without the barrier** ("fused": each thread did both
+passes on blocks of 16 rows in a small private buffer). It was never faster: at
+12000 width the buffer was 2.9 to 4.3 MB, too big for the 256 KB L2 cache, and
+each block had to recompute extra rows. We removed it to keep the code small. The
+report mentions it.
+
+### Batch: many small images (`run_batch` in `src/bench.c`)
+
+Two ways to use p threads on 3000 images of 1024 x 1024:
+
+- **per_row ("threads share each image")**: images one after another, each with
+  omp_rows. Every image starts and ends a parallel loop, with a barrier at the end.
+- **per_image ("one image per thread")**: whole images handed to free threads:
+
+```c
+#pragma omp parallel
+{
+    Image *mine = &outputs[omp_get_thread_num()];   /* this thread's own output */
+    #pragma omp for schedule(dynamic, 1)
+    for (int n = 0; n < N; n++) filter_box(&f, &pool[n % pool_size], mine, ...);
+}
+```
+
+No barrier between images. `dynamic, 1` keeps every thread busy until the end.
+(The program makes 8 different test images and uses them in turn, to save memory.)
+
+## 5. Every OpenMP construct we use
 
 | Where | Construct | Why |
 |---|---|---|
-| `run_rows` | `parallel for schedule(runtime)` | split rows; schedule chosen at run time to compare static / dynamic / guided |
-| `run_method` | `omp_set_num_threads`, `omp_set_schedule` | thread count and Rows schedule from the command line |
-| `run_tiled` | `parallel for collapse(2) schedule(static)` | two tile loops become one list of tiles, enough pieces for all threads |
-| `run_separable` | `parallel` + two `for` | one team for both passes; implicit barrier between them is required |
-| `run_batch` | `parallel for schedule(dynamic, 1)`; `parallel` + `for schedule(dynamic, 1)` | hand whole images to whichever thread is free |
-| `image_count_differences` | `parallel for reduction(+ : differences)` | each thread counts privately; counts added at the end, no race |
-| `first_touch`, `image_make_test` | `parallel for schedule(static)` | prepare buffers in parallel before timing |
+| `run_rows` | `parallel for schedule(runtime)` | split rows; schedule chosen at run time |
+| `run_method` | `omp_set_num_threads`, `omp_set_schedule` | thread count and schedule from the command line |
+| `run_tiled` | `parallel for collapse(2) schedule(static)` | two tile loops become one list of tiles |
+| `run_separable` | `parallel` + two `omp for` | one team for both passes; the barrier between them is required |
+| `run_batch` | `parallel` + `for schedule(dynamic, 1)`, `omp_get_thread_num` | hand whole images to free threads; each thread has its own output |
+| `image_count_differences` | `parallel for reduction(+ : differences)` | each thread counts privately, counts added at the end, no race |
+| `first_touch`, `image_make_test` | `parallel for schedule(static)` | prepare memory in parallel before timing |
 | `warm_up_threads` | empty `parallel num_threads(p)` | create the threads before the timer starts |
 | `mark_owner` | `omp_get_thread_num()` | thread map: which thread wrote this pixel |
 
-Why there are no locks, atomics or critical sections: threads only **read** the
-input image, and each output pixel is **written by exactly one thread**. Nothing is
-shared for writing, so there is nothing to protect.
+**No locks, atomics or critical sections**, because nothing is written by two
+threads. The only value all threads add to (the difference count) uses
+`reduction`, which gives each thread a private counter and adds them up at the end.
 
-## 4. Measurement tricks (and why each matters)
+## 6. Measuring fairly
 
-1. **Best of N repetitions**: the fastest run is the one least disturbed by other
-   programs.
-2. **First touch before timing**: page faults (the OS giving memory for the first
-   time) would otherwise be counted as filter time.
-3. **Warm-up thread team**: creating threads takes time; it is done once, outside.
-4. **Junk output before each method (0xA5)**: a broken method that writes nothing
-   cannot pass verification by finding the previous method's output.
-5. **Byte-by-byte verification** after every method, at every thread count (batch:
-   both strategies, before timing).
-6. **Precise timer (QPC)**: 1 ms resolution would be 10 % error on a 10 ms run.
-7. **Large images** (12000 x 12000 = 432 MB per image) so each run is long enough
-   to measure and the data does not fit in the cache, as in the proposal.
-8. **Other programs closed** for the final run: timings need the whole CPU.
+All in `src/bench.c` and `src/image.c`.
 
-## 5. Reading the graphs (results/plots/)
+1. **Best of N repetitions** (3 for the main runs). The fastest run is the one
+   least disturbed by other programs.
+2. **First touch before timing.** Windows only really gives a page of memory the
+   first time it is written. We write every buffer once before the timer starts,
+   so this cost is not counted as filter time.
+3. **Warm-up thread team.** Creating threads takes time. An empty parallel region
+   creates them once, before timing.
+4. **Junk in the output (0xA5) before each method.** A broken method that wrote
+   nothing would otherwise "pass" by finding the previous method's correct output.
+5. **A precise timer.** MinGW's `omp_get_wtime` only ticks every 1 ms, which would
+   be 10 % error on a 10 ms run. On Windows we use `QueryPerformanceCounter`
+   (100 ns).
+6. **Large images** (12000 x 12000), so each run is long enough to measure and the
+   data does not fit in the cache.
+7. **Other programs closed** during the final run.
+8. **64-bit build.** The 12000 x 12000 blur needs about 3 GB; a 32-bit program can
+   only use about 2 GB.
 
-- **time.png**: x = threads, y = seconds. Dashed line = ideal (T1 / p). The plain
-  numbers behind the other graphs.
-- **speedup.png**: x = threads, y = T1 / Tp. Dashed line = ideal (p threads, p
-  times faster). The closer a line is to the dashed one, the better it scales.
-  Separable methods start above 1 at one thread because they do less work, not
-  because of parallelism. The dotted flat line is `seq_sep` (one thread).
-- **efficiency.png**: speedup / p. 1.0 = perfect use of every thread. It always
-  falls as p grows (overheads, memory limits).
-- **blur_sizes.png**: speedup with the most threads as the blur window grows. A
-  bigger window = more arithmetic per byte loaded, so the work becomes
-  compute-bound and scales better.
-- **schedules.png**: Rows with static, dynamic and guided. Rows all cost the same,
-  so static is already balanced; dynamic pays a small cost per row handed out.
-- **batch.png**: many small images. Compare "threads share each image" with "one
-  image per thread".
-- **Thread maps** (demo/threadmap_*.png): each colour is a thread. Static rows =
-  4 solid bands. Dynamic = thin interleaved stripes (each row goes to whichever
-  thread is free, different every run). Tiled = tiles coloured by thread.
+## 7. Checking that the output is correct
 
-## 6. Likely questions, with model answers
+- `bench` compares every method's output with `seq`, **byte by byte**, at every
+  thread count. The `verified` column says `ok` for every row of every final
+  result.
+- `batch` checks both strategies against the sequential output at every thread
+  count, before timing.
+- `filter --verify` (and the app's Apply) also runs `seq` and reports
+  "identical" or not.
+- If any byte differs, the program prints `MISMATCH` and exits with code 2.
+- The automatic tests (`tests/`) run every method on awkward sizes (1x1, 2x3, 3x3,
+  4x7, 17x9, 128x1, 1x128, 257x131 ...), every blur size from 3 to 25, all three
+  schedules, and all-black / all-white images.
+
+## 8. The code, file by file
+
+The C program is `pdc_conv.exe`; it does **all** filtering and timing. The Python
+app only runs it and shows what it writes.
+
+**`src/pdc.h`**: the one header. The `Image` type (width, height, pixels as R,G,B
+bytes row by row), `Filter` (kind, window size, weights, shift), the method and
+schedule names, and every shared function. Also two small helpers, `clamp` and
+`clamp_to_byte`.
+
+**`src/image.c`**: memory, timer and image files.
+- `xalloc`: memory aligned to 64 bytes (one cache line).
+- `first_touch`: write a buffer once, in parallel, before timing.
+- `wtime`: the precise timer.
+- `image_make_test`: the generated test image (gradients, a circle, a square,
+  stripes, a little noise). Same seed = same image.
+- `image_count_differences`: compares two images, with `reduction`.
+- `image_read_ppm`, `image_write_ppm`: the PPM format (a tiny header, then raw RGB
+  bytes; the simplest image format there is).
+
+**`src/filters.c`**: the maths, no OpenMP at all.
+- `filter_make`: builds the blur weights from Pascal's triangle.
+- `blur_pixel`, `sharpen_pixel`, `sobel_pixel`: one output pixel.
+- `gather_window`: for border pixels, copies the window with clamp to edge.
+- `blur_box`, `sharpen_box`, `sobel_box`: filter a rectangle (rows y0..y1, columns
+  x0..x1). **`filter_box`** picks one of them. Every 2-D method is just
+  `filter_box` called on different rectangles: the whole image, one row, or one
+  tile.
+- `blur_row_horizontal`, `blur_row_vertical`: the two passes of the separable blur.
+
+**`src/parallel.c`**: the five methods (section 4), `run_method` (sets the thread
+count and schedule, then calls the method), and the thread-map image.
+
+**`src/bench.c`**: `run_bench` (every method at every thread count, table + CSV)
+and `run_batch` (many small images). Each CSV row is written and flushed before the
+table line is printed, so the app can show it straight away.
+
+**`src/main.c`**: reads the command line and runs `gen`, `filter`, `bench` or
+`batch`.
+
+**`gui/`**: the app. `app.pyw` is the window, `engine.py` runs `pdc_conv.exe` in
+the background, `charts.py` draws the graphs (also used for the report's graphs).
+
+**`scripts/`**: `build.ps1` (compile), `run_all.py` (all experiments),
+`plot_results.py` (graphs), `package.ps1` (the zip).
+
+**`tests/`**: automatic tests for the program and the app.
+
+## 9. The results and what they mean
+
+### Main result: one 12000 x 12000 image
+
+| | `seq` (T1) | 4 threads | 8 threads |
+|---|---:|---:|---:|
+| Blur 5x5, Rows / Tiled | 2.62 s | 3.0x | **4.2 to 4.3x** |
+| Blur 15x15, Tiled | 16.6 s | 3.2x | 4.3x |
+| Sharpen | 0.215 s | 1.6x | 1.6x |
+| Sobel | 0.485 s | 2.5 to 2.6x | 2.8 to 2.9x |
+| Blur 5x5, `omp_sep` | 2.62 s | **4.6x** | 4.3x |
+| Blur 15x15, `omp_sep` | 16.6 s | **11.4x** | 6.9x |
+
+### Why each result is what it is
+
+**Up to 4 threads it scales well, after that much less.** There are 4 real cores.
+Threads 5 to 8 are Hyper-Threads sharing those cores, so 4 to 8 threads adds only
+about 1.4x.
+
+**Sharpen stops at 1.6x: memory-bound.** Only 5 operations per value, so the
+threads mostly wait for RAM (about 10 GB/s moved). More threads cannot make RAM
+faster. Blur does far more arithmetic per byte, so it keeps scaling.
+
+**Sobel is in between (2.8x)**: more work per pixel than sharpen, less than blur.
+
+**A bigger blur window scales a little better** (blur sweep, 8000 x 8000): more
+arithmetic per byte. The 2-D blur gets about 4.0 to 4.35x at 8 threads for every
+size from 3 to 25.
+
+**Separable blur is the fastest, but scales badly.** It does much less work (2N
+instead of N x N), so even one thread is 2.1x (5x5) to 5.5x (15x15) faster than
+`seq`. That is an **algorithm** gain, not parallelism. But it reads and writes a
+big buffer for little arithmetic, so it is memory-bound: it scales only about 2x on
+its own and gets **slower from 4 to 8 threads**. Speedups for these methods are
+always measured against the same `seq` T1. The CSV also has
+`speedup_vs_self_1thread` for scaling on its own.
+
+**Amdahl's law.** Solving the formula for f using the measured speedup:
+f = (1/S - 1/p) / (1 - 1/p). Blur 5x5 Tiled gives **f = 0.107 at p = 4** and
+**0.125 at p = 8**. Our code has almost no truly serial part, so this f mostly
+measures other losses: shared memory bandwidth, the barrier, thread start-up, and
+Hyper-Threads not being real cores. It is an upper estimate.
+
+**Schedules (static, dynamic, guided): no real winner.** 4.31x, 4.38x and 4.31x at
+8 threads, within 2 %, which is less than the run-to-run variation. Every row costs
+the same, so static is already balanced, and dynamic's cost per row (12000
+hand-outs) is tiny next to the 0.2 ms each row takes.
+
+**Batch: one image per thread wins** with 4 and 8 threads (3.28x vs 2.71x at 4,
+4.30x vs 4.01x at 8). "Threads share each image" has a barrier after every one of
+the 3000 images. With 2 threads the two are about equal.
+
+**Every row of every result was verified identical to the sequential output.**
+
+### Reading the graphs (`results/plots/`)
+
+- **speedup.png**: x = threads, y = speedup. The dashed line is ideal. The closer
+  to it, the better. Separable lines start above 1 because they do less work.
+  A flat dotted line is a one-thread method (`seq_sep`).
+- **efficiency.png**: speedup / threads. 1.0 is perfect; it always falls as threads
+  grow.
+- **time.png**: the plain seconds behind the other graphs.
+- **blur_sizes.png**: speedup at 8 threads as the blur window grows.
+- **schedules.png**: the three schedules, almost on top of each other.
+- **batch.png**: the two batch strategies.
+- **demo/threadmap_*.png**: each colour is a thread. Static rows = solid bands,
+  dynamic = thin stripes, tiled = blocks.
+
+## 10. Questions you may be asked, with answers
+
+**About parallelism**
 
 1. **Why is convolution easy to parallelise?** Each output pixel depends only on
-   the input, never on other output pixels. So any split of the output is correct
-   and needs no synchronisation.
-2. **Why do you write to a separate output image?** If we filtered in place, a
-   thread could read a neighbour pixel that another thread has already overwritten,
-   and the result would depend on timing (a race). Separate input and output make
-   every read safe.
-3. **Do you have any race conditions? Any locks?** No. The input is only read; every
-   output pixel has exactly one writer. The only combined value, the difference
-   count, uses `reduction`.
-4. **What does `schedule(static)` do?** Divides the iterations into p equal
-   consecutive blocks before the loop starts; thread 0 gets the first block, and so
-   on. No cost at run time; best when every iteration costs the same.
-5. **And dynamic? guided?** Dynamic: threads take the next chunk (here 1 row) when
-   they finish one, which balances uneven work but costs a little per chunk.
-   Guided: like dynamic, but chunks start large and shrink, so fewer hand-outs.
-6. **Which schedule was best here, and why?** None, measurably: they were within 2 %
-   (4.31x, 4.38x, 4.31x at 8 threads), less than the variation between repeated
-   runs, so the order means nothing. All rows cost about the same, so static is already balanced;
-   dynamic's cost per hand-out (12000 rows) is tiny next to 0.2 ms of work per row.
-   Dynamic would win if rows had very different costs.
-7. **What is `collapse(2)`?** It merges two nested loops into one iteration space,
-   so the tiles of the whole image are split between threads instead of only the
-   rows of tiles. Gives more, smaller pieces to share.
-8. **Why tiles at all?** A tile keeps the rows a thread is reading close together,
-   so the window rows stay in the cache while it moves across the tile.
-9. **What is the implicit barrier in `omp_sep`?** Every `omp for` ends with a
-   barrier: all threads wait until all are done. Pass 2 (vertical) needs rows that
-   other threads produced in pass 1, so this wait is required for correctness.
-10. **Why does the plain separable blur scale badly?** It does little arithmetic per
-    byte and writes then reads a full-size intermediate (4 bytes per channel, 1.7 GB
-    at 12000²) through main memory. It is limited by memory bandwidth, which all
-    cores share, plus the barrier.
-11. **Could you avoid that barrier?** We tried: a "fused" version where each thread
-    did both passes on blocks of 16 rows in a small private buffer, recomputing the
-    2r rows at block edges. It was never faster than `omp_sep` (0.651 s against
-    0.567 s, 5x5, 4 threads), because at 12000 width that buffer is 2.9 to 4.3 MB,
-    far bigger than the 256 KB L2, so the sums still went to main memory, plus the
-    extra rows. We removed it to keep the program small.
-12. **Why not 8x speedup with 8 threads?** The test CPU (i7-3770) has 4 physical
-    cores; threads 5-8 are hyper-threads sharing those cores. Also memory bandwidth
-    is shared, there is a serial part (starting threads, borders, the barrier), and
-    the OS and other programs use some CPU.
-13. **What is hyper-threading and what does it give you here?** Two hardware threads
-    per core share its execution units. It helps when one thread waits for memory;
-    it cannot double compute power, so 4 -> 8 threads gives much less than 2x.
-14. **What is Amdahl's law? What serial fraction did you get?** S(p) = 1 / (f +
-    (1 - f) / p). Solving for f from the measured 8-thread speedup:
-    f = (1/S - 1/p) / (1 - 1/p). The report shows the calculation. It includes real
-    serial work and every other loss, so it is an upper estimate.
-15. **What is false sharing? Can it happen here?** Two threads writing different
+   the input, never on other output pixels. Any split of the output is correct and
+   needs no synchronisation.
+2. **Why a separate output image?** If we filtered in place, a thread could read a
+   neighbour that another thread had already changed: a race. Separate input and
+   output make every read safe.
+3. **Do you have race conditions, locks or atomics?** No. The input is only read,
+   each output pixel has exactly one writer, and the one shared count uses
+   `reduction`.
+4. **What does `schedule(static)` do?** Splits the iterations into p equal blocks
+   before the loop starts. No run-time cost. Best when every iteration costs the
+   same.
+5. **Dynamic and guided?** Dynamic: a thread takes the next chunk (here 1 row) when
+   it is free; balances uneven work, small cost per chunk. Guided: chunks start big
+   and shrink, so fewer hand-outs.
+6. **Which schedule was best?** None measurably: within 2 %, less than the noise.
+   Rows all cost the same, so static is already balanced. Dynamic would win if rows
+   had very different costs.
+7. **What is `collapse(2)`?** Joins two nested loops into one list of iterations,
+   so all tiles are shared between threads, not just the rows of tiles.
+8. **Why tiles?** The rows a thread reads stay close together, so they stay in the
+   cache.
+9. **What is the implicit barrier in `omp_sep`?** Every `omp for` ends with all
+   threads waiting for each other. Pass 2 needs rows other threads made in pass 1,
+   so the wait is required for a correct result.
+10. **Why does the separable blur scale badly?** Little arithmetic per byte, and it
+    writes then reads a full-size buffer (4 bytes per value, 1.7 GB at 12000²)
+    through RAM. RAM bandwidth is shared by all cores. Plus the barrier.
+11. **Could you avoid that barrier?** We tried a fused version: each thread did
+    both passes on blocks of 16 rows in its own small buffer. It was never faster
+    than `omp_sep` (0.651 s vs 0.567 s, 5x5, 4 threads): the buffer (2.9 to 4.3 MB)
+    did not fit in the 256 KB L2, and blocks recomputed extra rows. So we removed
+    it.
+12. **What does `reduction(+ : differences)` do?** Each thread gets a private
+    counter starting at 0; at the end OpenMP adds them into the shared one. No race,
+    no lock.
+13. **Why `omp_set_num_threads` and not an environment variable?** The program sets
+    it for each run from the `--threads` list, so one run can test 1, 2, 4 and 8.
+
+**About performance**
+
+14. **Why not 8x with 8 threads?** Only 4 real cores; threads 5 to 8 are
+    Hyper-Threads. Also shared memory bandwidth, the barrier and thread start-up,
+    and other programs using some CPU.
+15. **What is Hyper-Threading?** Two hardware threads share one core's execution
+    units. It helps when one waits for memory, but it cannot double the computing
+    power.
+16. **What is Amdahl's law and what serial fraction did you get?**
+    S(p) = 1 / (f + (1 - f) / p). From the measured speedup, f = 0.107 at 4 threads
+    and 0.125 at 8 (blur 5x5 Tiled). It includes every loss, not only serial code,
+    so it is an upper estimate.
+17. **Why is sharpen's speedup so low?** Only 5 values per pixel: memory-bound. The
+    threads wait for RAM, and RAM does not get faster with more threads.
+18. **Why does a bigger blur scale better?** More arithmetic per byte: threads
+    spend their time computing, which scales with cores.
+19. **Why is the separable version faster even with one thread?** It does less
+    work (2N instead of N²). That is a better algorithm, not parallelism, which is
+    why we also report its speedup relative to its own one-thread time.
+20. **Per-image vs per-row for many small images?** Per-row starts and ends a
+    parallel loop, with a barrier, for every image. Per-image gives each thread
+    whole images with no barrier between them, so less waiting.
+21. **What is false sharing? Can it happen here?** Two threads writing different
     variables in the same 64-byte cache line make the line bounce between cores.
-    Here each thread writes whole rows or tiles (thousands of bytes), so only the
-    first and last line of a thread's block can be shared with a neighbour, which is
-    negligible. Buffers are 64-byte aligned.
-16. **What is first touch and why do you do it?** The OS assigns physical memory
-    when a page is first written. Doing it in advance, in parallel, keeps page faults
-    out of the timing (and on multi-socket machines puts pages near their threads).
-17. **How do you know the parallel outputs are correct?** Every method's output is
-    compared byte by byte with the sequential one in every bench run (Verified
-    column), batch checks both strategies at every thread count before timing, and
-    the tests check awkward sizes (1x1, 2x3, 128x1, 257x131 ...), all blur sizes and
-    all schedules.
-18. **Why integers instead of floating point?** Floating-point addition in a
-    different order can give slightly different results. With integers, every method
-    gives exactly the same bytes, so we can demand equality, not "close enough".
-19. **How is the blur a Gaussian?** Binomial weights (rows of Pascal's triangle)
-    approach a Gaussian curve. They are whole numbers whose total is a power of two,
+    Here each thread writes whole rows or tiles (thousands of bytes), so at most the
+    edges of a block share a line: negligible. Buffers are 64-byte aligned.
+22. **What is first touch?** The OS gives a page of physical memory only when it is
+    first written. We write every buffer once before timing so this cost is not
+    timed.
+
+**About correctness and the code**
+
+23. **How do you know the parallel outputs are correct?** Byte-by-byte comparison
+    with `seq` for every method at every thread count, in every run, plus the
+    automatic tests on awkward sizes.
+24. **Why integers, not floating point?** Different addition orders can change
+    floating-point results slightly. With integers every method gives exactly the
+    same bytes, so we can demand equality.
+25. **How is the blur a Gaussian?** Binomial weights (Pascal's triangle) approach
+    the Gaussian bell curve. They are whole numbers that add up to a power of two,
     so the division is an exact shift.
-20. **Why can blur be separated into two passes?** Its 2-D weights are the product
-    of a row weight and a column weight (w[i] x w[j]). So you can sum along rows
-    first, then along columns: 2N operations per pixel instead of N².
-21. **Why is the separable version faster even with one thread?** Fewer operations
-    (2N vs N²). That is an algorithm gain, not parallelism, so for scaling we also
-    report speedup relative to the method's own 1-thread time.
-22. **How do you handle borders?** Clamp to edge: a pixel outside the image takes
-    the value of the nearest edge pixel. Border pixels gather their window into a
-    small buffer; interior pixels read the image directly.
-23. **Why the QPC timer?** MinGW's `omp_get_wtime` has 1 ms resolution, too coarse
-    for 10 to 100 ms runs. `QueryPerformanceCounter` has 100 ns.
-24. **Why a 64-bit compiler?** A 12000 x 12000 blur benchmark needs about 3 GB in one
-    process; a 32-bit program can only address about 2 GB.
-25. **Why does a bigger blur window scale better?** More multiplications per byte
-    read: the threads spend their time computing (which scales with cores) instead
-    of waiting for memory (which does not).
-26. **Per-image vs per-row for many small images?** Per-row starts and ends a
-    parallel loop (with a barrier) for every image and splits a small image into very
-    small pieces. Per-image gives each thread whole images with no barrier between
-    them, so it wastes less time waiting.
-27. **What does the thread map show?** Which thread computed each pixel. Static
-    rows: p solid bands. Dynamic: rows interleaved, different every run. It is made
-    in a separate untimed run so recording owners does not affect the timing.
-28. **Why is sharpen's speedup lower than blur's?** Sharpen does very little work per
-    pixel (5 values), so it is limited by memory bandwidth, not by the cores.
-29. **Could you use `#pragma omp simd` or GPU?** The compiler already vectorises the
-    blur inner loops at -O3. GPU (CUDA/OpenCL) would be another project; the task
-    was OpenMP on the CPU.
-30. **What would you do with more time?** Measure on a CPU with more physical cores;
-    try `proc_bind`/thread affinity; add a cache-blocked 2-D blur.
+26. **Why can the blur be split into two passes?** Its 2-D weight is row weight x
+    column weight, so summing along rows and then down columns gives the same
+    result with 2N instead of N² operations.
+27. **How do you handle borders?** Clamp to edge: outside pixels take the value of
+    the nearest edge pixel. Border pixels copy their window into a small buffer
+    first; interior pixels read the image directly (faster).
+28. **Why QueryPerformanceCounter?** MinGW's `omp_get_wtime` has 1 ms resolution,
+    too coarse for short runs. QPC has 100 ns.
+29. **Why a 64-bit compiler?** The 12000 x 12000 blur needs about 3 GB; a 32-bit
+    program can use only about 2 GB.
+30. **What does the thread map show?** Which thread computed each pixel. It is made
+    in a separate, untimed run, so recording it does not slow the timing.
+31. **What does the app do?** It only builds a `pdc_conv` command, runs it, and
+    shows the images, table and charts from the files it writes. It shows the exact
+    command, so every result can be repeated on the command line.
+32. **Could you use SIMD or a GPU?** The compiler already uses SIMD (vector
+    instructions) for the blur's inner loops at `-O3`. A GPU (CUDA) would be a
+    different project; the task was OpenMP on the CPU.
+33. **What would you do with more time?** Test on a CPU with more real cores, try
+    thread affinity (`proc_bind`), and a cache-blocked 2-D blur.
+34. **What changed from the proposal?** 64-bit compiler (memory), QPC timer, a
+    variable blur size (3 to 25) to study arithmetic per byte, and extra
+    experiments (schedules, thread maps) plus the app for the demo.
 
-## 7. Numbers to remember (final run, i7-3770, 4 cores / 8 threads)
+## 11. Numbers to remember
 
-- 12000 x 12000 blur 5x5: `seq` 2.62 s; Rows / Tiled 8 threads 0.62 s (**4.2x**);
-  4 threads **3.0x**; best overall `omp_sep` 4 threads 0.57 s (**4.6x**).
-- Blur 15x15: `seq` 16.6 s; Tiled 8 threads 3.85 s (4.3x); `omp_sep` 4 threads
-  1.45 s (**11.4x**, mostly from doing 2N instead of N² work).
-- Sharpen: only **1.6x** (memory-bound, about 10 GB/s moved). Sobel: **2.8 to 2.9x**.
-- Amdahl serial fraction (blur 5x5 Tiled): **0.107** at p = 4, **0.125** at p = 8.
-- Schedules: static 4.31x, dynamic 4.38x, guided 4.31x: within 2 %, so no real winner.
-- Batch (3000 x 1024²): one image per thread 4.30x vs threads share each image
-  4.01x at 8 threads; 3.28x vs 2.71x at 4.
-- Every result row verified identical to sequential.
+- CPU: i7-3770, **4 cores / 8 threads**, 8 MB L3.
+- 12000 x 12000 blur 5x5: `seq` **2.62 s**; 8 threads **0.62 s = 4.2x**; 4 threads
+  **3.0x**. Best overall: `omp_sep`, 4 threads, **0.57 s = 4.6x**.
+- Blur 15x15: `seq` **16.6 s**; `omp_sep` 4 threads **1.45 s = 11.4x** (mostly from
+  doing 2N instead of N² work).
+- Sharpen **1.6x** (memory-bound). Sobel **2.8 to 2.9x**.
+- Amdahl serial fraction: **0.107** (p = 4), **0.125** (p = 8).
+- Schedules: 4.31x / 4.38x / 4.31x, so no winner.
+- Batch, 3000 x 1024²: one image per thread **4.30x** vs threads share each image
+  **4.01x** at 8 threads.
+- **Every result verified identical to sequential.**
 
-## 8. Five-minute demo (with the app)
+## 12. The demo (about 5 minutes, with the app)
 
-1. (30 s) Open the app. Point at the status bar: CPU name and thread count are read
-   from the laptop. "The C program does all the work; this window only runs it."
-2. (1 min) **Filter** tab, generated 2048 image, Blur 9, Sequential, Apply. Then
-   Rows, all threads, Apply: show parallel time, sequential time, speedup and
-   "Identical to sequential".
-3. (1 min) The thread map is on by default. Rows + static: 4 or 8 solid bands. Switch to
-   dynamic: interleaved stripes, "each row goes to whichever thread is free".
-   Tiled: tiles by thread.
-4. (1 min 30) **Benchmark** tab, 4096, Blur 5, threads 1 2 4 8, reps 2, Run. While
-   it runs, rows appear in the table one by one (Verified says ok) and the line
-   under the tabs shows the `pdc_conv bench ...` command being run. Show the speedup chart: separable
-   lines start above 1 (less work), Rows and Tiled follow the ideal line up to 4
-   threads and bend after (Hyper-Threading), ideal dashed line.
-5. (1 min) Show `results/plots` from the final run (12000 x 12000) and the batch
-   graph; Help > Open source folder, open `parallel.c` if asked.
+1. **(30 s)** Open the app. Point at the status bar: CPU name and thread count are
+   read from this laptop. "The C program does all the work; this window only runs
+   it. The line at the bottom is the exact command."
+2. **(1 min) Filter tab.** Generated image 2048, Blur 9, method Sequential, Apply.
+   Then Rows with all threads, Apply: show parallel time, sequential time, speedup
+   and "Identical to sequential".
+3. **(1 min) Thread map** (on by default). Rows + static: solid bands, "each thread
+   gets one block of rows". Switch to dynamic, Apply: stripes, "each row goes to
+   whichever thread is free". Tiled: blocks.
+4. **(1 min 30) Benchmark tab.** Size 4096, Blur 5, threads 1 2 4 8, Run. Rows fill
+   the table one by one, and the Verified column says ok. On the chart: Rows and
+   Tiled follow the dashed ideal line up to 4 threads, then bend (Hyper-Threading);
+   separable lines start above 1 (less work).
+5. **(1 min)** Show `results/plots` from the final 12000 x 12000 run and the batch
+   graph. If asked about code: Help > Open source folder, open `parallel.c`.
 
-Timings on the demo laptop (fill in after the laptop test): ...
+The laptop's numbers will differ from the report (different CPU). That is normal:
+explain the shape, not the exact numbers.
+
+## 13. Before the viva
+
+- [ ] Unzip `PDC-Convolution.zip` on the demo laptop and run the demo once (section
+      12). Note that laptop's core count and speedups.
+- [ ] Laptop on its charger, power mode "Best performance", other programs closed.
+- [ ] Each of us can explain all five methods and point to their pragma in
+      `parallel.c` (section 4).
+- [ ] Each of us can explain why sharpen is 1.6x and blur is 4.3x (memory-bound vs
+      compute-bound).
+- [ ] Each of us can explain why 8 threads give about 4.3x, not 8x (4 cores,
+      Hyper-Threading, Amdahl).
+- [ ] Test each other with the questions in section 10, without reading the
+      answers.
+- [ ] Know where things are: report = `REPORT.md`, graphs = `results/plots/`,
+      thread maps = `demo/`, code = `src/`.
