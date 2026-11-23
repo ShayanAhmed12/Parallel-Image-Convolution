@@ -1,9 +1,10 @@
 # Parallel Image Convolution / Filtering (OpenMP)
 
 Blur (any odd size 3 to 25), sharpen and Sobel edge detection on 24-bit RGB images,
-written sequentially first and then parallelised with OpenMP in six ways. Every
+written sequentially first and then parallelised with OpenMP in five ways. Every
 parallel method produces exactly the same bytes as the sequential one; `bench` and
-`batch` check that at every thread count, and the app checks it on every Apply. The written report is [REPORT.md](REPORT.md);
+`batch` check that at every thread count, and the app checks it on every Apply.
+The written report is [REPORT.md](REPORT.md);
 the study guide for the viva is [VIVA_GUIDE.md](VIVA_GUIDE.md).
 
 ## Run the app (demo laptop, nothing to install)
@@ -15,7 +16,9 @@ the study guide for the viva is [VIVA_GUIDE.md](VIVA_GUIDE.md).
 
 Tabs: **Filter** (one image, one method, compared with sequential, optional thread
 map), **Benchmark** (every method at several thread counts, chart and table),
-**Batch** (many small images). Help > Open source folder shows the C code.
+**Batch** (many small images). Results fill the table and chart while a run is going,
+and the line under the tabs shows the exact `pdc_conv` command the app is running.
+Press Enter to run the current tab. Help > Open source folder shows the C code.
 
 ![Filter tab](docs/screenshots/filter_tab.png)
 
@@ -51,11 +54,11 @@ pdc_conv batch  [--n 2000] [--bsize 1024] [--kernel blur]
 --schedule S    static|dynamic|guided, loop schedule of omp_rows (default static)
 --verify        filter: also run seq; print speedup and whether the output is identical
 --threadmap F   filter: an image showing which thread computed each pixel
---tile HxW      omp_tiled tile size (default 16x2048);  --fuse-bh R: omp_sep_fused rows per block (16)
+--tile HxW      omp_tiled tile size (default 16x2048)
 ```
 
-Methods: `seq`, `omp_rows`, `omp_tiled`, `seq_sep`, `omp_sep`, `omp_sep_fused`
-(the last three are blur only). Exit codes: 0 ok, 1 error (`error: ...` on stderr),
+Methods: `seq`, `omp_rows`, `omp_tiled`, `seq_sep`, `omp_sep`
+(the last two are blur only). Exit codes: 0 ok, 1 error (`error: ...` on stderr),
 2 an output differs from the sequential one.
 
 ## Folders
@@ -67,5 +70,5 @@ scripts/    build.ps1, run_all.py, plot_results.py, package.ps1
 tests/      unittest tests for the program and the app (+ small CSV fixtures)
 results/    the final CSVs, logs and plots used in the report
 demo/       example outputs and thread maps
-docs/       proposal, project list, design and plan
+docs/       proposal, project list, app screenshots
 ```

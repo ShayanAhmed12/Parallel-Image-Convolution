@@ -55,7 +55,6 @@ integer arithmetic is used, so all methods produce identical bytes. Borders use
 | `omp_tiled` | 16 x 2048 tiles shared between threads | `parallel for collapse(2) schedule(static)` |
 | `seq_sep` | separable blur: 1-D horizontal pass, then vertical pass (2N instead of N² multiplications per pixel), one thread | none |
 | `omp_sep` | both separable passes parallel over rows, full-size 32-bit intermediate | one `parallel` region, two `for` loops; the implicit barrier between them is required |
-| `omp_sep_fused` | each thread does both passes on blocks of 16 rows in a private buffer; no barrier, 2r rows per block recomputed | `parallel` + `for schedule(static)`, private buffer per thread |
 | batch `per_row` | images one after another, each with `omp_rows` | as `omp_rows` |
 | batch `per_image` | whole images handed to free threads | `parallel for schedule(dynamic, 1)` |
 
@@ -87,7 +86,6 @@ Time in seconds, speedup T1 / Tp in brackets.
 | Blur 5x5 | 2.621 | `omp_rows` | 1.453 (1.80) | 0.858 (3.05) | 0.618 (4.24) |
 | | | `omp_tiled` | 1.398 (1.88) | 0.865 (3.03) | 0.615 (4.26) |
 | | | `omp_sep` | 0.720 (3.64) | 0.567 (4.63) | 0.609 (4.30) |
-| | | `omp_sep_fused` | 0.765 (3.43) | 0.651 (4.03) | 0.670 (3.91) |
 | Sharpen | 0.215 | `omp_rows` | 0.145 (1.49) | 0.130 (1.66) | 0.133 (1.62) |
 | | | `omp_tiled` | 0.145 (1.49) | 0.134 (1.60) | 0.134 (1.61) |
 | Sobel | 0.485 | `omp_rows` | 0.272 (1.78) | 0.183 (2.64) | 0.172 (2.82) |
@@ -95,7 +93,6 @@ Time in seconds, speedup T1 / Tp in brackets.
 | Blur 15x15 | 16.590 | `omp_rows` | 8.877 (1.87) | 5.296 (3.13) | 3.839 (4.32) |
 | | | `omp_tiled` | 8.637 (1.92) | 5.240 (3.17) | 3.846 (4.31) |
 | | | `omp_sep` | 1.572 (10.56) | 1.449 (11.45) | 2.415 (6.87) |
-| | | `omp_sep_fused` | 2.124 (7.81) | 1.555 (10.67) | 2.414 (6.87) |
 
 One-thread separable times: blur 5x5 `seq_sep` 1.252 s (2.09x faster than `seq`),
 blur 15x15 `seq_sep` 3.009 s (5.51x). Every row verified `ok`.
@@ -106,14 +103,14 @@ blur 15x15 `seq_sep` 3.009 s (5.51x). Every row verified `ok`.
 
 ### 4.2 Blur size (`results/blur_sizes.csv`, 8000 x 8000, 8 threads)
 
-| Blur size | T1 (s) | `omp_rows` | `omp_tiled` | `omp_sep_fused` |
-|---|---:|---:|---:|---:|
-| 3 | 0.536 | 4.30 | 4.35 | 2.34 |
-| 5 | 1.100 | 4.29 | 4.27 | 4.21 |
-| 9 | 2.954 | 3.98 | 4.33 | 8.70 |
-| 15 | 7.216 | 4.20 | 4.20 | 10.40 |
-| 21 | 13.476 | 4.16 | 4.18 | 11.90 |
-| 25 | 18.777 | 4.14 | 4.14 | 12.66 |
+| Blur size | T1 (s) | `omp_rows` | `omp_tiled` |
+|---|---:|---:|---:|
+| 3 | 0.536 | 4.30 | 4.35 |
+| 5 | 1.100 | 4.29 | 4.27 |
+| 9 | 2.954 | 3.98 | 4.33 |
+| 15 | 7.216 | 4.20 | 4.20 |
+| 21 | 13.476 | 4.16 | 4.18 |
+| 25 | 18.777 | 4.14 | 4.14 |
 
 (speedup over `seq` at the same blur size)
 
@@ -179,36 +176,15 @@ more work per pixel (brightness of 8 neighbours, two gradients) and reaches 2.8 
 
 **Arithmetic per byte decides scaling (blur sweep).** The 2-D blur does N² weighted
 sums per channel, so it is compute-bound for every size and scales at 3.98 to 4.35x
-with 8 threads regardless of N. The separable methods do only 2N, so at small N
-they are memory-bound like sharpen, and the speedup over `seq` comes from both
-fewer operations and threads: 2.3x at N = 3, 12.7x at N = 25.
+with 8 threads regardless of N. Even at N = 3 (9 sums) it scales better than
+sharpen (5 operations), which levels off at 1.6x.
 
-**Separable and fused at 12000 x 12000.** The separable methods are the fastest at
+**Separable blur at 12000 x 12000.** The separable methods are the fastest at
 every thread count for blur (best: `omp_sep` at 4 threads, 0.567 s for 5x5 and
 1.449 s for 15x15, 4.6x and 11.4x over `seq`). But they scale only about 2x on
 their own (`speedup_vs_self_1thread` 1.9 to 2.5 at 4 threads) and get **slower from 4 to 8
 threads**: they read and write a lot of memory for little arithmetic, and extra
 Hyper-Threads only add competition for the same memory and caches.
-
-Fusing the two passes did **not** beat the plain separable version at this size,
-contrary to what we expected. Two reasons, both visible in the numbers:
-
-1. A row of 32-bit sums for a 12000-pixel row is 144 KB, so one thread's block
-   buffer (16 + 2r rows) is 2.9 MB for 5x5 and 4.3 MB for 15x15. That does not fit
-   in a 256 KB L2, and 4 threads' buffers do not fit in the 8 MB L3, so the
-   intermediate still goes to main memory.
-2. Each block recomputes 2r extra rows: 4 per 16 rows for 5x5 (+25 % horizontal
-   work) and 14 per 16 rows for 15x15 (+88 %). With one thread, fused 15x15 takes
-   3.875 s against 3.009 s for `seq_sep`.
-
-The blur sweep (8000 x 8000) ran only `omp_sep_fused`, not `omp_sep`, so it cannot
-say whether fusion wins there. Fused scales a little better on itself at 8000 (2.6
-to 2.8x at 4 threads, against 1.9 to 2.5x for both separable methods at 12000), but
-its buffer is still 1.9 MB (5x5) to 3.8 MB (25x25) per thread, so it does not stay
-in the cache there either. Its 8.7x to 12.7x over `seq` for blur 9 and up comes
-mostly from doing 2N instead of N² operations. Making fusion pay off would need a
-buffer that fits in L2: blocks that are narrow as well as short (column strips). We
-kept the simpler version and report this as a measured limitation.
 
 **Scheduling.** The three schedules are within 2 % of each other (4.31x, 4.38x,
 4.31x at 8 threads), less than the variation between repeated runs of the same
@@ -237,7 +213,10 @@ implementation for all sizes over a separate fast path for 5x5.
 A small Windows app (`gui/`) runs the same program for the demo; it does no
 filtering or timing itself. The Filter tab shows one method against sequential with
 the thread map; the Benchmark and Batch tabs run `bench` and `batch` and draw the
-same charts as above.
+same charts as above. The program writes each CSV row as soon as it is measured,
+so the table and chart fill in while a run is going, and the app shows the exact
+`pdc_conv` command it is running, so every result can be repeated on the command
+line.
 
 ![Filter tab](docs/screenshots/filter_tab.png)
 ![Benchmark tab](docs/screenshots/benchmark_tab.png)
@@ -250,17 +229,22 @@ same charts as above.
   scaling; 5x5 stays the main case.
 - Added the scheduling comparison, thread maps and a desktop app for the demo;
   `-march=x86-64-v2` so the same exe runs on another computer.
+- We also tried a "fused" separable blur: each thread did both passes on blocks of
+  16 rows in a small private buffer, so there was no barrier. It was never faster
+  than `omp_sep` (5x5 at 4 threads: 0.651 s against 0.567 s), because one thread's
+  buffer (2.9 to 4.3 MB at 12000 width) does not fit in the 256 KB L2, so the
+  intermediate still went to main memory, and each block recomputed 2r extra rows.
+  We removed it to keep the program small; its timings are still in the raw logs
+  in `results/`.
 
 ## 7. Conclusion
 
-All six methods and both batch strategies produce byte-identical output to the
+All five methods and both batch strategies produce byte-identical output to the
 sequential program for every size and thread count tested. On a 4-core / 8-thread
 CPU the 2-D filters reach about 3x with 4 threads and 4.3x with 8 (blur), limited
 by physical cores and memory bandwidth; low-arithmetic filters (sharpen) are
 memory-bound at 1.6x. The separable blur gives the fastest blur by doing less work
-(up to 11.4x over `seq` for 15x15), but scales poorly because it is memory-bound.
-Fusing its passes did not beat the plain separable version at 12000 width, because
-the per-thread buffer (2.9 to 4.3 MB) does not fit in the cache. For many small images, one image per thread beats
+(up to 11.4x over `seq` for 15x15), but scales poorly because it is memory-bound. For many small images, one image per thread beats
 splitting each image. The experiments match the course concepts: Amdahl's law,
 memory-bound vs compute-bound work, the cost of barriers, and the limits of
 Hyper-Threading.

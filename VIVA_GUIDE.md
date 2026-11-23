@@ -75,9 +75,8 @@ size, radius, blur weights, shift), `Method`, `Schedule`, `RunOptions`,
   blur. Horizontal: weighted sums along one row into 32-bit numbers. Vertical: for
   one output row, weighted sum of N rows of those sums, then round and shift.
 
-### src/parallel.c: the six methods (the OpenMP part, know this best)
-- `run_options_default`: 1 thread, static schedule, 16 x 2048 tiles, 16 rows per
-  fused block.
+### src/parallel.c: the five methods (the OpenMP part, know this best)
+- `run_options_default`: 1 thread, static schedule, 16 x 2048 tiles.
 - `mark_owner`: only for the thread map. Writes `omp_get_thread_num()` into one byte
   per pixel of the rectangle a thread just wrote. Does nothing in timed runs
   (`owner` is NULL).
@@ -97,13 +96,6 @@ size, radius, blur weights, shift), `Method`, `Schedule`, `RunOptions`,
   `#pragma omp for` loops: pass 1 then pass 2. The end of the first loop is an
   **implicit barrier**: pass 2 needs rows of sums that other threads produced, so
   nobody may start pass 2 until everyone has finished pass 1.
-- `run_separable_fused` (**omp_sep_fused**): each thread allocates a small private
-  buffer, then takes blocks of 16 output rows (`omp for schedule(static)`). For a
-  block it does the horizontal pass on the 16 + 2r rows it needs, straight into its
-  buffer, then the vertical pass from that buffer. No barrier is needed, and the
-  buffer can stay in the cache if the image is not too wide. Cost: the 2r rows at
-  block edges are computed twice. (At 12000 width the buffer is 2.9 MB, too big for
-  the cache, so fusion did not beat `omp_sep` there; see question 11.)
 - `run_method`: sets the thread count (`omp_set_num_threads`), sets the schedule for
   Rows (`omp_set_schedule`), and calls the method with a `switch`.
 - `method_name`, `method_from_name`, `method_blur_only`, `method_is_parallel`,
@@ -117,7 +109,8 @@ size, radius, blur weights, shift), `Method`, `Schedule`, `RunOptions`,
 - `best_time`: run a method several times, keep the fastest.
 - `run_bench`: sequential reference first (output + T1), then every method at every
   thread count. Before each method the output is filled with junk (0xA5), so a
-  method that wrote nothing cannot pass. Prints a table and writes the CSV.
+  method that wrote nothing cannot pass. Each CSV row is written and flushed
+  (`fflush`) before the table line is printed, so the app can show it straight away.
 - `run_batch`: many small images. `per_row`: images one after another, each with
   the Rows method (threads share each image). `per_image`: `#pragma omp parallel`
   with `#pragma omp for schedule(dynamic, 1)` over the images, each thread filtering
@@ -134,7 +127,7 @@ stdout is unbuffered so the app sees each line as it is printed.
 - `gui/app.pyw`: the window (Filter, Benchmark, Batch tabs). Builds a `pdc_conv`
   command line, runs it, shows the images, table and chart.
 - `gui/engine.py`: runs the exe in the background (`EngineRun`), method names and
-  help texts, CPU/RAM detection, image conversion to PPM.
+  help texts, the CPU name, the command line shown in the app, image conversion to PPM.
 - `gui/charts.py`: the graphs, shared by the app and the report.
 - `scripts/build.ps1` (compile), `run_all.py` (all experiments), `plot_results.py`
   (graphs), `package.ps1` (the zip for the laptop).
@@ -149,7 +142,6 @@ stdout is unbuffered so the app sees each line as it is printed.
 | `run_method` | `omp_set_num_threads`, `omp_set_schedule` | thread count and Rows schedule from the command line |
 | `run_tiled` | `parallel for collapse(2) schedule(static)` | two tile loops become one list of tiles, enough pieces for all threads |
 | `run_separable` | `parallel` + two `for` | one team for both passes; implicit barrier between them is required |
-| `run_separable_fused` | `parallel` + `for`, private buffer per thread | each thread keeps its intermediate in a small private buffer (meant to stay in the cache); no barrier |
 | `run_batch` | `parallel for schedule(dynamic, 1)`; `parallel` + `for schedule(dynamic, 1)` | hand whole images to whichever thread is free |
 | `image_count_differences` | `parallel for reduction(+ : differences)` | each thread counts privately; counts added at the end, no race |
 | `first_touch`, `image_make_test` | `parallel for schedule(static)` | prepare buffers in parallel before timing |
@@ -232,15 +224,12 @@ shared for writing, so there is nothing to protect.
     byte and writes then reads a full-size intermediate (4 bytes per channel, 1.7 GB
     at 12000²) through main memory. It is limited by memory bandwidth, which all
     cores share, plus the barrier.
-11. **Did fusion help?** No, not at our sizes. The idea: each thread uses a small
-    buffer (16 + 2r rows), so the intermediate need not go to main memory and there
-    is no barrier. But at 12000 x 12000 a row of sums is 144 KB, so the buffer is
-    2.9 MB (5x5) to 4.3 MB (15x15): bigger than L2 (256 KB), and 4 of them exceed the
-    8 MB L3. Plus the 2r recomputed rows (+25 % work for 5x5, +88 % for 15x15). So it
-    was not faster than `omp_sep`. At 8000 x 8000 it scaled a little better on itself
-    (2.6 to 2.8x at 4 threads), but its buffer (1.9 to 3.8 MB) still does not fit,
-    and we did not run `omp_sep` there to compare. The fix would be column strips
-    (narrow blocks) so the buffer fits in L2; we kept the simple version and report it.
+11. **Could you avoid that barrier?** We tried: a "fused" version where each thread
+    did both passes on blocks of 16 rows in a small private buffer, recomputing the
+    2r rows at block edges. It was never faster than `omp_sep` (0.651 s against
+    0.567 s, 5x5, 4 threads), because at 12000 width that buffer is 2.9 to 4.3 MB,
+    far bigger than the 256 KB L2, so the sums still went to main memory, plus the
+    extra rows. We removed it to keep the program small.
 12. **Why not 8x speedup with 8 threads?** The test CPU (i7-3770) has 4 physical
     cores; threads 5-8 are hyper-threads sharing those cores. Also memory bandwidth
     is shared, there is a serial part (starting threads, borders, the barrier), and
@@ -322,11 +311,12 @@ shared for writing, so there is nothing to protect.
 2. (1 min) **Filter** tab, generated 2048 image, Blur 9, Sequential, Apply. Then
    Rows, all threads, Apply: show parallel time, sequential time, speedup and
    "Identical to sequential".
-3. (1 min) Tick **Show thread map**. Rows + static: 4 or 8 solid bands. Switch to
+3. (1 min) The thread map is on by default. Rows + static: 4 or 8 solid bands. Switch to
    dynamic: interleaved stripes, "each row goes to whichever thread is free".
    Tiled: tiles by thread.
 4. (1 min 30) **Benchmark** tab, 4096, Blur 5, threads 1 2 4 8, reps 2, Run. While
-   it runs, explain the log (every line says ok). Show the speedup chart: separable
+   it runs, rows appear in the table one by one (Verified says ok) and the line
+   under the tabs shows the `pdc_conv bench ...` command being run. Show the speedup chart: separable
    lines start above 1 (less work), Rows and Tiled follow the ideal line up to 4
    threads and bend after (Hyper-Threading), ideal dashed line.
 5. (1 min) Show `results/plots` from the final run (12000 x 12000) and the batch
